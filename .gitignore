@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
+
+# ISCE/processing outputs
+PICKLE/
+merged/
+ion/
+insar/
+f*/ 
+*.slc
+*.int
+*.cor
+*.unw
+*.xml
+*.vrt
+*.hdr
+*.log
+*.rdr
+*.geo
+*.dem
+*.wbd
+*.h5
+*.he5
+
+# Keep example XMLs if explicitly tracked
+!examples/*.xml
