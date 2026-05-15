@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 import math
+import shutil
 import re
+import subprocess
+import urllib.request
+import zipfile
 
 from .metadata import detect_product_metadata, extract_alos2_zip
 from .runner import run_isce2_alos2app, validate_alos2_steps
@@ -18,6 +22,9 @@ def process_alos2_pair(
     dem_coreg=None,
     dem_geocode=None,
     water_body=None,
+    auto_prepare_dem=True,
+    dem_overwrite=False,
+    convert_dem_to_wgs84_ellipsoid=True,
     use_gpu=False,
     do_ionosphere=True,
     apply_ionosphere=True,
@@ -80,12 +87,77 @@ def process_alos2_pair(
     pair_name = f"{reference_info['date']}_{secondary_info['date']}"
     xml_file = (xml_dir / f"alos2App_{pair_name}.xml").resolve()
 
+    dem_result = None
+    baseline_result = None
+    missing_dem_inputs = dem_coreg is None or dem_geocode is None or water_body is None
+
+    if auto_prepare_dem and missing_dem_inputs and run:
+        # First create a minimal XML without DEM/WBD paths and run through
+        # baseline only. The baseline log gives the scene geographic bounding
+        # box needed for local SRTM/WBD preparation.
+        create_alos2app_xml(
+            reference_dir=reference_dir,
+            secondary_dir=secondary_dir,
+            output_xml=xml_file,
+            # reference_frame=reference_info["frame"],
+            # secondary_frame=secondary_info["frame"],
+            reference_polarization=reference_info["polarization"],
+            secondary_polarization=secondary_info["polarization"],
+            do_insar=do_insar,
+            multilook_params=multilook_params,
+            dem_coreg=dem_coreg,
+            dem_geocode=dem_geocode,
+            water_body=water_body,
+            use_gpu=use_gpu,
+            do_ionosphere=do_ionosphere,
+            apply_ionosphere=apply_ionosphere,
+            interferogram_filter_strength=interferogram_filter_strength,
+            interferogram_filter_window_size=interferogram_filter_window_size,
+            interferogram_filter_step_size=interferogram_filter_step_size,
+            remove_magnitude_before_filtering=remove_magnitude_before_filtering,
+            do_dense_offset=do_dense_offset,
+            estimate_residual_offset_after_geometrical_coregistration=(
+                estimate_residual_offset_after_geometrical_coregistration
+            ),
+            delete_geometry_files_used_for_dense_offset_estimation=(
+                delete_geometry_files_used_for_dense_offset_estimation
+            ),
+            dense_offset_estimation_window_width=dense_offset_estimation_window_width,
+            dense_offset_estimation_window_height=dense_offset_estimation_window_height,
+            dense_offset_skip_width=dense_offset_skip_width,
+            dense_offset_skip_height=dense_offset_skip_height,
+            geocode_file_list=geocode_file_list,
+        )
+
+        baseline_result = run_isce2_alos2app(
+            xml_file=xml_file,
+            work_dir=run_dir,
+            alos2app_cmd=alos2app_cmd,
+            start_step=None,
+            end_step="baseline",
+            steps=steps,
+        )
+        baseline_log = run_dir / "alos2App_full_terminal.log"
+        bounding_box = _parse_reference_bounding_box_from_log(baseline_log)
+        dem_result = prepare_srtm_dem_and_wbd(
+            bounding_box=bounding_box,
+            output_dir=work_dir / "dem",
+            dem_coreg=dem_coreg,
+            dem_geocode=dem_geocode,
+            water_body=water_body,
+            overwrite=dem_overwrite,
+            convert_to_wgs84_ellipsoid=convert_dem_to_wgs84_ellipsoid,
+        )
+        dem_coreg = dem_result["dem_coreg"]
+        dem_geocode = dem_result["dem_geocode"]
+        water_body = dem_result["water_body"]
+
     create_alos2app_xml(
         reference_dir=reference_dir,
         secondary_dir=secondary_dir,
         output_xml=xml_file,
-        reference_frame=reference_info["frame"],
-        secondary_frame=secondary_info["frame"],
+        # reference_frame=reference_info["frame"],
+        # secondary_frame=secondary_info["frame"],
         reference_polarization=reference_info["polarization"],
         secondary_polarization=secondary_info["polarization"],
         do_insar=do_insar,
@@ -114,17 +186,61 @@ def process_alos2_pair(
         geocode_file_list=geocode_file_list,
     )
 
-    result = None
+    result = baseline_result
 
     if run:
-        result = run_isce2_alos2app(
-            xml_file=xml_file,
-            work_dir=run_dir,
-            alos2app_cmd=alos2app_cmd,
-            start_step=start_step,
-            end_step=end_step,
-            steps=steps,
-        )
+        # If the user only asked for baseline and auto DEM preparation already
+        # ran that step, keep the baseline result and avoid running it twice.
+        if not (baseline_result is not None and end_step == "baseline"):
+            dense_offset_requested = _dense_offset_step_requested(
+                start_step=start_step,
+                end_step=end_step,
+                do_dense_offset=do_dense_offset,
+            )
+
+            if dense_offset_requested and _step_index(start_step) < _step_index("dense_offset"):
+                # Dense-offset processing in alos2App.py expects generic WBD
+                # files named wbd.rdr(.xml/.vrt), while earlier ALOS-2 steps
+                # create pair/look-specific names such as
+                # YYMMDD-YYMMDD_2rlks_4alks.wbd.  Run up to slc_match first
+                # so those WBD files exist, prepare the compatibility names,
+                # then continue from dense_offset.
+                first_end_step = "slc_match"
+                result = run_isce2_alos2app(
+                    xml_file=xml_file,
+                    work_dir=run_dir,
+                    alos2app_cmd=alos2app_cmd,
+                    start_step=start_step,
+                    end_step=first_end_step,
+                    steps=steps,
+                )
+                prepare_dense_offset_wbd(
+                    run_dir=run_dir,
+                    multilook_params=multilook_params,
+                )
+                result = run_isce2_alos2app(
+                    xml_file=xml_file,
+                    work_dir=run_dir,
+                    alos2app_cmd=alos2app_cmd,
+                    start_step="dense_offset",
+                    end_step=end_step,
+                    steps=steps,
+                )
+            else:
+                if dense_offset_requested:
+                    prepare_dense_offset_wbd(
+                        run_dir=run_dir,
+                        multilook_params=multilook_params,
+                    )
+
+                result = run_isce2_alos2app(
+                    xml_file=xml_file,
+                    work_dir=run_dir,
+                    alos2app_cmd=alos2app_cmd,
+                    start_step=start_step,
+                    end_step=end_step,
+                    steps=steps,
+                )
 
     return {
         "pair_name": pair_name,
@@ -135,6 +251,10 @@ def process_alos2_pair(
         "reference_info": reference_info,
         "secondary_info": secondary_info,
         "multilook_params": multilook_params,
+        "dem_result": dem_result,
+        "dem_coreg": None if dem_coreg is None else Path(dem_coreg).resolve(),
+        "dem_geocode": None if dem_geocode is None else Path(dem_geocode).resolve(),
+        "water_body": None if water_body is None else Path(water_body).resolve(),
         "start_step": start_step,
         "end_step": end_step,
         "stdout": None if result is None else result.stdout,
@@ -182,6 +302,144 @@ def _parse_reference_bounding_box_from_log(log_file: str | Path) -> list[float]:
         float(match.group("min_lon")),
         float(match.group("max_lon")),
     ]
+
+
+
+def _step_index(step: str | None) -> int:
+    """Return the alos2App.py processing-step index.
+
+    ``None`` is treated as the beginning of the processing chain.
+    """
+    from .constants import ALOS2APP_STEPS
+
+    if step is None:
+        return 0
+    return ALOS2APP_STEPS.index(step)
+
+
+def _dense_offset_step_requested(
+    start_step: str | None,
+    end_step: str | None,
+    do_dense_offset: bool,
+) -> bool:
+    """Return True when the requested processing range includes dense_offset."""
+    if not do_dense_offset:
+        return False
+
+    from .constants import ALOS2APP_STEPS
+
+    dense_index = ALOS2APP_STEPS.index("dense_offset")
+    start_index = _step_index(start_step)
+    end_index = len(ALOS2APP_STEPS) - 1 if end_step is None else _step_index(end_step)
+    return start_index <= dense_index <= end_index
+
+
+def _copy_and_retarget_isce_sidecars(src: Path, dst: Path) -> None:
+    """Copy an ISCE raster and sidecars, retargeting sidecar filenames.
+
+    ISCE XML/VRT sidecars may store either a relative basename or an absolute
+    ``file_name``.  When copying a pair-specific WBD such as
+    ``insar/201127-210122_2rlks_4alks.wbd`` to ``dense_offset/wbd.rdr``, both
+    forms must be rewritten; otherwise ISCE can still try to read the original
+    file from the wrong directory.
+    """
+    src = Path(src).resolve()
+    dst = Path(dst).resolve()
+    dst.parent.mkdir(parents=True, exist_ok=True)
+
+    for suffix in ["", ".xml", ".vrt"]:
+        src_file = Path(str(src) + suffix)
+        dst_file = Path(str(dst) + suffix)
+
+        if not src_file.exists():
+            raise FileNotFoundError(f"Required source file not found: {src_file}")
+
+        shutil.copy2(src_file, dst_file)
+
+        if suffix in {".xml", ".vrt"}:
+            sidecar_text = dst_file.read_text(encoding="utf-8", errors="replace")
+
+            # Replace most-specific paths first, then fallback to basename.
+            replacements = [
+                (str(src_file.resolve()), str(dst_file.resolve())),
+                (str(src.resolve()), str(dst.resolve())),
+                (src_file.name, dst_file.name),
+                (src.name, dst.name),
+            ]
+            for old, new in replacements:
+                sidecar_text = sidecar_text.replace(old, new)
+
+            dst_file.write_text(sidecar_text, encoding="utf-8")
+
+
+def prepare_dense_offset_wbd(run_dir: str | Path, multilook_params: dict) -> Path:
+    """Prepare generic ``wbd.rdr`` files required by ISCE2 dense_offset.
+
+    ALOS-2 processing steps create radar-coordinate water-body files with
+    pair/look-specific names, for example::
+
+        insar/YYMMDD-YYMMDD_2rlks_4alks.wbd
+
+    but some ISCE2 dense-offset code expects the generic basename::
+
+        wbd.rdr
+
+    relative to the dense-offset working directory.  This helper finds the WBD
+    file matching the mode-dependent first-stage multilooks, then writes
+    ``wbd.rdr``, ``wbd.rdr.xml``, and ``wbd.rdr.vrt`` only inside
+    ``run/dense_offset/``. The source WBD is still searched in the normal ISCE
+    output locations such as ``run/insar/``.
+    """
+    run_dir = Path(run_dir).resolve()
+    insar_dir = run_dir / "insar"
+    dense_dir = run_dir / "dense_offset"
+    dense_dir.mkdir(parents=True, exist_ok=True)
+
+    range_looks = int(multilook_params["number of range looks 1"])
+    azimuth_looks = int(multilook_params["number of azimuth looks 1"])
+    pattern = f"*_{range_looks}rlks_{azimuth_looks}alks.wbd"
+
+    search_dirs = [insar_dir, run_dir, dense_dir]
+
+    candidates = []
+    for search_dir in search_dirs:
+        if search_dir.exists():
+            candidates.extend(
+                p for p in search_dir.glob(pattern)
+                if p.name != "wbd.rdr" and p.is_file()
+            )
+
+    if not candidates:
+        fallback = []
+        for search_dir in search_dirs:
+            if search_dir.exists():
+                fallback.extend(
+                    p for p in search_dir.glob("*.wbd")
+                    if p.name != "wbd.rdr" and p.is_file()
+                )
+        if not fallback:
+            searched = ", ".join(str(d) for d in search_dirs)
+            raise FileNotFoundError(
+                "Could not find any radar-coordinate WBD file for dense offset. "
+                f"Expected pattern: {pattern}. Searched: {searched}"
+            )
+        src = sorted(fallback)[0]
+        print(
+            "Warning: could not find WBD matching "
+            f"{pattern}; using fallback {src}"
+        )
+    else:
+        # Prefer the canonical pair/look-specific WBD produced in run/insar.
+        candidates = sorted(candidates, key=lambda p: (p.parent != insar_dir, str(p)))
+        src = candidates[0]
+
+    dst = dense_dir / "wbd.rdr"
+    _copy_and_retarget_isce_sidecars(src, dst)
+
+    print("Prepared dense-offset WBD files:")
+    print(f"  {src} -> {dst}")
+
+    return dst
 
 
 def _format_lat(value: int) -> str:
@@ -523,6 +781,411 @@ def _create_empty_dem_files_from_bounding_box(
         "wbd_1_arcsec": wbd_file,
     }
 
+
+# ---------------------------------------------------------------------------
+# DEM/WBD preparation helpers
+# ---------------------------------------------------------------------------
+
+SRTMGL1_BASE_URL = "https://step.esa.int/auxdata/dem/SRTMGL1"
+SRTMGL3_BASE_URL = "https://step.esa.int/auxdata/dem/SRTMGL3"
+
+
+def _run_external_command(cmd: list[str | Path], cwd: str | Path | None = None) -> None:
+    """Run an external command and raise a useful error if it fails."""
+    cmd = [str(c) for c in cmd]
+    print("Running:", " ".join(cmd))
+    try:
+        subprocess.run(cmd, cwd=None if cwd is None else Path(cwd), check=True)
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"Required external command was not found: {cmd[0]!r}. "
+            "Please make sure GDAL tools such as gdalbuildvrt, gdalwarp, "
+            "and gdalinfo are available in your PATH."
+        ) from exc
+
+
+def _srtm_zip_name(lat: int, lon: int, arcsec: int) -> str:
+    """Return ESA STEP SRTM zip filename for a tile.
+
+    ESA STEP reliably exposes SRTMGL1 tiles as 1-degree HGT zip files.
+    In some regions, equivalent SRTMGL3 filenames are not present on the
+    STEP server, so the production workflow downloads SRTMGL1 and derives
+    the 3-arcsec DEM locally by resampling.  This function is therefore
+    intentionally restricted to SRTMGL1 downloads.
+    """
+    if arcsec == 1:
+        return f"{_format_lat(lat)}{_format_lon(lon)}.SRTMGL1.hgt.zip"
+    raise ValueError(
+        "Direct SRTMGL3 downloads are not used because the ESA STEP "
+        "SRTMGL3 URL pattern is not reliable. Download SRTMGL1 and "
+        "derive the 3-arcsec DEM locally instead."
+    )
+
+
+def _srtm_hgt_name(lat: int, lon: int) -> str:
+    """Return HGT filename inside an ESA STEP SRTM zip file."""
+    return f"{_format_lat(lat)}{_format_lon(lon)}.hgt"
+
+
+def _download_file(url: str, output_file: str | Path, overwrite: bool = False) -> Path:
+    """Download a file unless it already exists."""
+    output_file = Path(output_file)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    if output_file.exists() and output_file.stat().st_size > 0 and not overwrite:
+        print(f"Already downloaded: {output_file}")
+        return output_file
+
+    print(f"Downloading: {url}")
+    try:
+        urllib.request.urlretrieve(url, output_file)
+    except Exception as exc:
+        if output_file.exists() and output_file.stat().st_size == 0:
+            output_file.unlink()
+        raise RuntimeError(f"Could not download {url}") from exc
+
+    return output_file
+
+
+def _download_srtm_tiles(
+    south: int,
+    north: int,
+    west: int,
+    east: int,
+    tile_dir: str | Path,
+    arcsec: int,
+    overwrite: bool = False,
+) -> list[Path]:
+    """Download and unzip all SRTM tiles covering integer-degree bounds."""
+    tile_dir = Path(tile_dir).resolve()
+    tile_dir.mkdir(parents=True, exist_ok=True)
+
+    base_url = SRTMGL1_BASE_URL if arcsec == 1 else SRTMGL3_BASE_URL
+    hgt_files: list[Path] = []
+
+    for lat in range(south, north):
+        for lon in range(west, east):
+            zip_name = _srtm_zip_name(lat, lon, arcsec=arcsec)
+            hgt_name = _srtm_hgt_name(lat, lon)
+            zip_file = tile_dir / zip_name
+            hgt_file = tile_dir / hgt_name
+            url = f"{base_url}/{zip_name}"
+
+            if not hgt_file.exists() or overwrite:
+                _download_file(url, zip_file, overwrite=overwrite)
+                print(f"Unzipping: {zip_file}")
+                with zipfile.ZipFile(zip_file, "r") as zf:
+                    zf.extractall(tile_dir)
+
+            if not hgt_file.exists():
+                raise FileNotFoundError(
+                    f"Expected HGT file was not created: {hgt_file}. "
+                    f"Check the downloaded archive: {zip_file}"
+                )
+
+            hgt_files.append(hgt_file)
+
+    return hgt_files
+
+
+def _prepare_one_srtm_dem(
+    bounding_box: list[float],
+    output_dir: str | Path,
+    arcsec: int,
+    convert_to_wgs84_ellipsoid: bool = True,
+    overwrite: bool = False,
+) -> Path:
+    """Download, stitch, crop, and convert one SRTM DEM to ISCE format.
+
+    The SRTM source elevations are EGM96 orthometric heights. With
+    ``convert_to_wgs84_ellipsoid=True``, GDAL is asked to transform
+    ``EPSG:4326+5773`` to ``EPSG:4979`` so the output is ellipsoid height,
+    which is what ISCE generally expects for ``*.dem.wgs84``.
+    """
+    if arcsec not in (1, 3):
+        raise ValueError("arcsec must be either 1 or 3")
+
+    output_dir = Path(output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    south, north, west, east = _rounded_dem_extent(bounding_box)
+    delta = 1.0 / (3600.0 if arcsec == 1 else 1200.0)
+    width = int(round((east - west) / delta))
+    length = int(round((north - south) / delta))
+
+    dem_file = output_dir / _dem_filename(south, north, west, east)
+    tile_dir = output_dir / "tiles"
+    hgt_files = _download_srtm_tiles(
+        south=south,
+        north=north,
+        west=west,
+        east=east,
+        tile_dir=tile_dir,
+        arcsec=arcsec,
+        overwrite=overwrite,
+    )
+
+    mosaic_vrt = output_dir / f"srtm_{arcsec}_arcsec_egm96_mosaic.vrt"
+    _run_external_command(["gdalbuildvrt", mosaic_vrt, *hgt_files])
+
+    if dem_file.exists() and not overwrite:
+        print(f"Already prepared DEM: {dem_file}")
+    else:
+        cmd = [
+            "gdalwarp",
+            "-overwrite",
+            "-te", str(west), str(south), str(east), str(north),
+            "-tr", str(delta), str(delta),
+            "-r", "bilinear",
+            "-of", "ENVI",
+            "-ot", "Float32",
+        ]
+        if convert_to_wgs84_ellipsoid:
+            cmd += ["-s_srs", "EPSG:4326+5773", "-t_srs", "EPSG:4979"]
+        else:
+            cmd += ["-t_srs", "EPSG:4326"]
+        cmd += [mosaic_vrt, dem_file]
+        _run_external_command(cmd)
+
+    _write_isce_raster_xml(
+        dem_file,
+        width=width,
+        length=length,
+        west=west,
+        east=east,
+        south=south,
+        north=north,
+        delta=delta,
+        data_type="FLOAT",
+        family="demimage",
+        image_type="dem",
+        reference="WGS84",
+    )
+    _write_vrt(
+        dem_file,
+        width=width,
+        length=length,
+        west=west,
+        north=north,
+        delta=delta,
+        vrt_dtype="Float32",
+        pixel_offset=4,
+        line_offset=width * 4,
+    )
+
+    return dem_file
+
+
+def _source_for_gdal(path: str | Path) -> Path:
+    """Return the best GDAL-readable path for an ISCE raw raster."""
+    path = Path(path).resolve()
+    vrt = Path(str(path) + ".vrt")
+    if vrt.exists():
+        return vrt
+    return path
+
+
+def _prepare_resampled_dem_from_source(
+    source_dem: str | Path,
+    bounding_box: list[float],
+    output_dir: str | Path,
+    arcsec: int,
+    overwrite: bool = False,
+) -> Path:
+    """Create an ISCE DEM by resampling an existing DEM source.
+
+    This is used for the 3-arcsec geocoding DEM. It avoids relying on the
+    legacy SRTMGL3 download endpoint, which can return 404 for valid tiles.
+    The source DEM is normally the freshly prepared SRTMGL1 WGS84 DEM.
+    """
+    if arcsec not in (1, 3):
+        raise ValueError("arcsec must be either 1 or 3")
+
+    output_dir = Path(output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    south, north, west, east = _rounded_dem_extent(bounding_box)
+    delta = 1.0 / (3600.0 if arcsec == 1 else 1200.0)
+    width = int(round((east - west) / delta))
+    length = int(round((north - south) / delta))
+
+    dem_file = output_dir / _dem_filename(south, north, west, east)
+    source_for_gdal = _source_for_gdal(source_dem)
+
+    if dem_file.exists() and not overwrite:
+        print(f"Already prepared DEM: {dem_file}")
+    else:
+        _run_external_command([
+            "gdalwarp",
+            "-overwrite",
+            "-t_srs", "EPSG:4326",
+            "-te", str(west), str(south), str(east), str(north),
+            "-tr", str(delta), str(delta),
+            "-r", "bilinear",
+            "-of", "ENVI",
+            "-ot", "Float32",
+            source_for_gdal,
+            dem_file,
+        ])
+
+    _write_isce_raster_xml(
+        dem_file,
+        width=width,
+        length=length,
+        west=west,
+        east=east,
+        south=south,
+        north=north,
+        delta=delta,
+        data_type="FLOAT",
+        family="demimage",
+        image_type="dem",
+        reference="WGS84",
+    )
+    _write_vrt(
+        dem_file,
+        width=width,
+        length=length,
+        west=west,
+        north=north,
+        delta=delta,
+        vrt_dtype="Float32",
+        pixel_offset=4,
+        line_offset=width * 4,
+    )
+
+    return dem_file
+
+
+def _create_ones_wbd_from_bounding_box(
+    bounding_box: list[float],
+    output_dir: str | Path,
+    overwrite: bool = False,
+) -> Path:
+    """Create a 1-arcsec all-land/all-valid water-body mask filled with 1.
+
+    This is a robust fallback when legacy SWBD downloads fail. It intentionally
+    does not mask water; it simply prevents ISCE from attempting broken WBD
+    downloads while keeping the XML input complete.
+    """
+    output_dir = Path(output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    south, north, west, east = _rounded_dem_extent(bounding_box)
+    delta = 1.0 / 3600.0
+    width = int((east - west) * 3600)
+    length = int((north - south) * 3600)
+    wbd_file = output_dir / _wbd_filename(south, north, west, east)
+
+    if not wbd_file.exists() or overwrite:
+        _write_constant_binary_file(
+            wbd_file,
+            total_values=width * length,
+            dtype_bytes=1,
+            fill_byte=1,
+        )
+
+    _write_isce_raster_xml(
+        wbd_file,
+        width=width,
+        length=length,
+        west=west,
+        east=east,
+        south=south,
+        north=north,
+        delta=delta,
+        data_type="BYTE",
+        family="image",
+        image_type=None,
+        reference=None,
+    )
+    _write_vrt(
+        wbd_file,
+        width=width,
+        length=length,
+        west=west,
+        north=north,
+        delta=delta,
+        vrt_dtype="Byte",
+        pixel_offset=1,
+        line_offset=width,
+    )
+
+    return wbd_file
+
+
+def prepare_srtm_dem_and_wbd(
+    bounding_box: list[float],
+    output_dir: str | Path,
+    dem_coreg: str | Path | None = None,
+    dem_geocode: str | Path | None = None,
+    water_body: str | Path | None = None,
+    overwrite: bool = False,
+    convert_to_wgs84_ellipsoid: bool = True,
+) -> dict:
+    """Prepare missing DEM/WBD inputs for ALOS-2 processing.
+
+    Directory layout under ``output_dir`` is exactly:
+
+    - ``dem_1_arcsec``: SRTMGL1 DEM converted to ISCE ``*.dem.wgs84``
+    - ``dem_3_arcsec``: 3-arcsec DEM derived locally from SRTMGL1 and converted to ISCE ``*.dem.wgs84``
+    - ``wbd_1_arcsec``: all-ones fallback WBD file
+
+    Provided paths are respected; only missing inputs are generated.
+    """
+    output_dir = Path(output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    dem_1_dir = output_dir / "dem_1_arcsec"
+    dem_3_dir = output_dir / "dem_3_arcsec"
+    wbd_dir = output_dir / "wbd_1_arcsec"
+
+    if dem_coreg is None:
+        dem_coreg = _prepare_one_srtm_dem(
+            bounding_box=bounding_box,
+            output_dir=dem_1_dir,
+            arcsec=1,
+            convert_to_wgs84_ellipsoid=convert_to_wgs84_ellipsoid,
+            overwrite=overwrite,
+        )
+    else:
+        dem_coreg = Path(dem_coreg).resolve()
+
+    if dem_geocode is None:
+        # The ESA STEP SRTMGL3 URL pattern is not reliable in all regions.
+        # To avoid 404 failures, derive the 3-arcsec DEM from the already
+        # prepared 1-arcsec DEM by resampling.
+        dem_geocode = _prepare_resampled_dem_from_source(
+            source_dem=dem_coreg,
+            bounding_box=bounding_box,
+            output_dir=dem_3_dir,
+            arcsec=3,
+            overwrite=overwrite,
+        )
+    else:
+        dem_geocode = Path(dem_geocode).resolve()
+
+    if water_body is None:
+        water_body = _create_ones_wbd_from_bounding_box(
+            bounding_box=bounding_box,
+            output_dir=wbd_dir,
+            overwrite=overwrite,
+        )
+    else:
+        water_body = Path(water_body).resolve()
+
+    south, north, west, east = _rounded_dem_extent(bounding_box)
+    return {
+        "bounding_box": bounding_box,
+        "extent": {"south": south, "north": north, "west": west, "east": east},
+        "dem_coreg": Path(dem_coreg).resolve(),
+        "dem_geocode": Path(dem_geocode).resolve(),
+        "water_body": Path(water_body).resolve(),
+        "dem_1_arcsec": Path(dem_coreg).resolve(),
+        "dem_3_arcsec": Path(dem_geocode).resolve(),
+        "wbd_1_arcsec": Path(water_body).resolve(),
+    }
+
 def generate_dem(
     reference_input,
     secondary_input,
@@ -545,130 +1208,116 @@ def generate_dem(
     interferogram_filter_step_size=4,
     remove_magnitude_before_filtering=True,
 ) -> dict:
-    """Generate DEM/topographic-phase products using internally created empty DEMs.
+    """Run the DEM-generation workflow using empty DEM inputs.
 
-    This workflow keeps the same external structure as ``process_alos2_pair``,
-    but removes the dense-offset parameters. It performs two runs internally:
+    This workflow is intentionally different from ``process_alos2_pair`` with
+    automatic SRTM preparation.  For phase-to-height / DEM generation, ISCE must
+    be run with zero-valued empty DEMs so that topographic phase is preserved
+    instead of being removed using an external real DEM.
 
-    1. Run ``alos2App.py`` through ``baseline`` to obtain
-       ``runBaseline.reference bounding box`` from the terminal log.
-    2. Create empty DEM/WBD files from that bounding box:
-       - 1-arcsec DEM, zero-valued int16, used for coregistration
-       - 3-arcsec DEM, zero-valued int16, used for geocoding
-       - 1-arcsec WBD, filled with 1, used as water-body mask
-    3. Run ``alos2App.py`` with those DEM/WBD paths explicitly written into the
-       XML, so ISCE does not attempt to download DEM files.
+    Workflow
+    --------
+    1. Run ``alos2App.py`` through ``baseline`` only, without DEM/WBD inputs.
+    2. Parse ``runBaseline.reference bounding box`` from the terminal log.
+    3. Create empty DEM/WBD files under ``work_dir/empty_dem``.
+    4. Recreate the processing XML using the empty DEM/WBD paths.
+    5. Run the requested processing range.
 
-    If ``dem_coreg``, ``dem_geocode``, or ``water_body`` are provided, that path
-    is respected and only missing files are generated internally.
+    If ``dem_coreg``, ``dem_geocode``, or ``water_body`` are provided, those
+    paths are respected; only missing inputs are replaced by empty files.
     """
-    validate_alos2_steps(start_step, end_step)
-
     work_dir = Path(work_dir).resolve()
-    baseline_work_dir = work_dir / "baseline_for_empty_dem"
-    empty_dem_dir = work_dir / "empty_dem"
-    final_work_dir = work_dir / "final"
 
-    user_provided_all_dem_paths = (
-        dem_coreg is not None and dem_geocode is not None and water_body is not None
+    # First run only to baseline to get the geographic bounding box.  Do not
+    # enable automatic SRTM preparation here; generate_dem must use empty DEMs.
+    baseline_result = process_alos2_pair(
+        reference_input=reference_input,
+        secondary_input=secondary_input,
+        work_dir=work_dir,
+        dem_coreg=None,
+        dem_geocode=None,
+        water_body=None,
+        auto_prepare_dem=False,
+        use_gpu=use_gpu,
+        do_ionosphere=do_ionosphere,
+        apply_ionosphere=apply_ionosphere,
+        run=True,
+        alos2app_cmd=alos2app_cmd,
+        do_insar=do_insar,
+        steps=steps,
+        start_step=None,
+        end_step="baseline",
+        geocode_file_list=geocode_file_list,
+        interferogram_filter_strength=interferogram_filter_strength,
+        interferogram_filter_window_size=interferogram_filter_window_size,
+        interferogram_filter_step_size=interferogram_filter_step_size,
+        remove_magnitude_before_filtering=remove_magnitude_before_filtering,
+        do_dense_offset=False,
+        estimate_residual_offset_after_geometrical_coregistration=False,
+        delete_geometry_files_used_for_dense_offset_estimation=False,
+        dense_offset_estimation_window_width=64,
+        dense_offset_estimation_window_height=64,
+        dense_offset_skip_width=32,
+        dense_offset_skip_height=32,
     )
 
-    baseline_result = None
-    empty_dem = None
+    baseline_log = Path(baseline_result["run_dir"]) / "alos2App_full_terminal.log"
+    bounding_box = _parse_reference_bounding_box_from_log(baseline_log)
 
-    if not user_provided_all_dem_paths:
-        baseline_result = process_alos2_pair(
-            reference_input=reference_input,
-            secondary_input=secondary_input,
-            work_dir=baseline_work_dir,
-            dem_coreg=dem_coreg,
-            dem_geocode=dem_geocode,
-            water_body=water_body,
-            use_gpu=use_gpu,
-            do_ionosphere=do_ionosphere,
-            apply_ionosphere=apply_ionosphere,
-            run=True,
-            alos2app_cmd=alos2app_cmd,
-            do_insar=do_insar,
-            steps=steps,
-            start_step=None,
-            end_step="baseline",
-            geocode_file_list=geocode_file_list,
-            interferogram_filter_strength=interferogram_filter_strength,
-            interferogram_filter_window_size=interferogram_filter_window_size,
-            interferogram_filter_step_size=interferogram_filter_step_size,
-            remove_magnitude_before_filtering=remove_magnitude_before_filtering,
-            do_dense_offset=False,
-            estimate_residual_offset_after_geometrical_coregistration=False,
-            delete_geometry_files_used_for_dense_offset_estimation=False,
-            dense_offset_estimation_window_width=64,
-            dense_offset_estimation_window_height=64,
-            dense_offset_skip_width=32,
-            dense_offset_skip_height=32,
-        )
+    empty_dem_result = _create_empty_dem_files_from_bounding_box(
+        bounding_box=bounding_box,
+        output_dir=work_dir / "empty_dem",
+    )
 
-        baseline_log = Path(baseline_result["run_dir"]) / "alos2App_full_terminal.log"
-        bounding_box = _parse_reference_bounding_box_from_log(baseline_log)
-        empty_dem = _create_empty_dem_files_from_bounding_box(
-            bounding_box=bounding_box,
-            output_dir=empty_dem_dir,
-        )
+    # Use user-provided paths only if explicitly supplied.  Otherwise force the
+    # empty DEM/WBD paths for the DEM-generation workflow.
+    if dem_coreg is None:
+        dem_coreg = empty_dem_result["dem_coreg"]
+    if dem_geocode is None:
+        dem_geocode = empty_dem_result["dem_geocode"]
+    if water_body is None:
+        water_body = empty_dem_result["water_body"]
 
-        if dem_coreg is None:
-            dem_coreg = empty_dem["dem_coreg"]
-        if dem_geocode is None:
-            dem_geocode = empty_dem["dem_geocode"]
-        if water_body is None:
-            water_body = empty_dem["water_body"]
+    final_result = process_alos2_pair(
+        reference_input=reference_input,
+        secondary_input=secondary_input,
+        work_dir=work_dir,
+        dem_coreg=dem_coreg,
+        dem_geocode=dem_geocode,
+        water_body=water_body,
+        auto_prepare_dem=False,
+        use_gpu=use_gpu,
+        do_ionosphere=do_ionosphere,
+        apply_ionosphere=apply_ionosphere,
+        run=run,
+        alos2app_cmd=alos2app_cmd,
+        do_insar=do_insar,
+        steps=steps,
+        start_step=start_step,
+        end_step=end_step,
+        geocode_file_list=geocode_file_list,
+        interferogram_filter_strength=interferogram_filter_strength,
+        interferogram_filter_window_size=interferogram_filter_window_size,
+        interferogram_filter_step_size=interferogram_filter_step_size,
+        remove_magnitude_before_filtering=remove_magnitude_before_filtering,
+        do_dense_offset=False,
+        estimate_residual_offset_after_geometrical_coregistration=False,
+        delete_geometry_files_used_for_dense_offset_estimation=False,
+        dense_offset_estimation_window_width=64,
+        dense_offset_estimation_window_height=64,
+        dense_offset_skip_width=32,
+        dense_offset_skip_height=32,
+    )
 
-    final_result = None
+    final_result["baseline_result"] = baseline_result
+    final_result["empty_dem_result"] = empty_dem_result
+    final_result["empty_dem_coreg"] = Path(empty_dem_result["dem_coreg"]).resolve()
+    final_result["empty_dem_geocode"] = Path(empty_dem_result["dem_geocode"]).resolve()
+    final_result["empty_water_body"] = Path(empty_dem_result["water_body"]).resolve()
 
-    if run:
-        final_result = process_alos2_pair(
-            reference_input=reference_input,
-            secondary_input=secondary_input,
-            work_dir=final_work_dir,
-            dem_coreg=dem_coreg,
-            dem_geocode=dem_geocode,
-            water_body=water_body,
-            use_gpu=use_gpu,
-            do_ionosphere=do_ionosphere,
-            apply_ionosphere=apply_ionosphere,
-            run=True,
-            alos2app_cmd=alos2app_cmd,
-            do_insar=do_insar,
-            steps=steps,
-            start_step=start_step,
-            end_step=end_step,
-            geocode_file_list=geocode_file_list,
-            interferogram_filter_strength=interferogram_filter_strength,
-            interferogram_filter_window_size=interferogram_filter_window_size,
-            interferogram_filter_step_size=interferogram_filter_step_size,
-            remove_magnitude_before_filtering=remove_magnitude_before_filtering,
-            do_dense_offset=False,
-            estimate_residual_offset_after_geometrical_coregistration=False,
-            delete_geometry_files_used_for_dense_offset_estimation=False,
-            dense_offset_estimation_window_width=64,
-            dense_offset_estimation_window_height=64,
-            dense_offset_skip_width=32,
-            dense_offset_skip_height=32,
-        )
+    return final_result
 
-    return {
-        "baseline_result": baseline_result,
-        "final_result": final_result,
-        "empty_dem": empty_dem,
-        "dem_coreg": Path(dem_coreg).resolve() if dem_coreg is not None else None,
-        "dem_geocode": Path(dem_geocode).resolve() if dem_geocode is not None else None,
-        "water_body": Path(water_body).resolve() if water_body is not None else None,
-        "work_dir": work_dir,
-        "baseline_work_dir": baseline_work_dir,
-        "final_work_dir": final_work_dir,
-        "xml_file": None if final_result is None else final_result["xml_file"],
-        "run_dir": None if final_result is None else final_result["run_dir"],
-        "stdout": None if final_result is None else final_result["stdout"],
-        "stderr": None if final_result is None else final_result["stderr"],
-    }
+
 
 # ---------------------------------------------------------------------------
 # Phase-to-height conversion helpers

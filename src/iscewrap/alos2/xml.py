@@ -46,8 +46,8 @@ def create_alos2app_xml(
     reference_dir,
     secondary_dir,
     output_xml,
-    reference_frame=None,
-    secondary_frame=None,
+    # reference_frame=None,
+    # secondary_frame=None,
     reference_polarization=None,
     secondary_polarization=None,
     multilook_params=None,
@@ -63,6 +63,7 @@ def create_alos2app_xml(
     interferogram_filter_window_size=32,
     interferogram_filter_step_size=4,
     remove_magnitude_before_filtering=True,
+    use_water_body_to_determine_number_of_matching_offsets=False,
     do_dense_offset=False,
     estimate_residual_offset_after_geometrical_coregistration=True,
     delete_geometry_files_used_for_dense_offset_estimation=False,
@@ -80,11 +81,11 @@ def create_alos2app_xml(
     add_property(component, "reference directory", Path(reference_dir).resolve())
     add_property(component, "secondary directory", Path(secondary_dir).resolve())
 
-    if reference_frame is not None:
-        add_property(component, "reference frames", f"[{reference_frame}]")
+    # if reference_frame is not None:
+    #     add_property(component, "reference frames", f"[{reference_frame}]")
 
-    if secondary_frame is not None:
-        add_property(component, "secondary frames", f"[{secondary_frame}]")
+    # if secondary_frame is not None:
+    #     add_property(component, "secondary frames", f"[{secondary_frame}]")
 
     if reference_polarization is not None:
         add_property(component, "reference polarization", reference_polarization)
@@ -115,18 +116,11 @@ def create_alos2app_xml(
     add_property(component, "interferogram filter window size", interferogram_filter_window_size)
     add_property(component, "interferogram filter step size", interferogram_filter_step_size)
     add_property(component, "remove magnitude before filtering", remove_magnitude_before_filtering)
+    add_property(component,"use water body to dertermine number of matching offsets",use_water_body_to_determine_number_of_matching_offsets,)
 
     add_property(component, "do dense offset", do_dense_offset)
-    add_property(
-        component,
-        "estimate residual offset after geometrical coregistration",
-        estimate_residual_offset_after_geometrical_coregistration,
-    )
-    add_property(
-        component,
-        "delete geometry files used for dense offset estimation",
-        delete_geometry_files_used_for_dense_offset_estimation,
-    )
+    add_property(component, "estimate residual offset after geometrical coregistration", estimate_residual_offset_after_geometrical_coregistration,)
+    add_property(component,"delete geometry files used for dense offset estimation",delete_geometry_files_used_for_dense_offset_estimation,)
     add_property(component, "dense offset estimation window width", dense_offset_estimation_window_width)
     add_property(component, "dense offset estimation window height", dense_offset_estimation_window_height)
     add_property(component, "dense offset skip width", dense_offset_skip_width)

@@ -12,6 +12,8 @@ from .runner import run_isce2_alos2app, validate_alos2_steps
 from .workflow import (
     process_alos2_pair,
     generate_dem,
+    prepare_srtm_dem_and_wbd,
+    prepare_dense_offset_wbd,
     read_track_metadata,
     read_isce_raster_metadata,
     read_isce_raster,
@@ -43,6 +45,8 @@ __all__ = [
     "validate_alos2_steps",
     "process_alos2_pair",
     "generate_dem",
+    "prepare_srtm_dem_and_wbd",
+    "prepare_dense_offset_wbd",
     "convert_phase_to_height",
     "plot_dem_comparison",
     "remove_mean_offset",
