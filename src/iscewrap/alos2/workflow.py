@@ -76,8 +76,8 @@ def process_alos2_pair(
     reference_meta = detect_product_metadata(reference_dir)
     secondary_meta = detect_product_metadata(secondary_dir)
 
-    reference_dir = reference_meta["product_root"]
-    secondary_dir = secondary_meta["product_root"]
+    reference_dir = _select_alos2_processing_dir(reference_dir, reference_meta)
+    secondary_dir = _select_alos2_processing_dir(secondary_dir, secondary_meta)
 
     reference_info = reference_meta["img_info"]
     secondary_info = secondary_meta["img_info"]
@@ -260,6 +260,15 @@ def process_alos2_pair(
         "stdout": None if result is None else result.stdout,
         "stderr": None if result is None else result.stderr,
     }
+
+
+def _select_alos2_processing_dir(input_dir: Path, metadata: dict) -> Path:
+    """Use product root for one product, or preserve a folder of stitched frames."""
+    img_roots = {img_file.parent.resolve() for img_file in metadata["files"]["IMG"]}
+    if len(img_roots) == 1:
+        return metadata["product_root"]
+    return input_dir.resolve()
+
 
 def _parse_reference_bounding_box_from_log(log_file: str | Path) -> list[float]:
     """Parse the reference bounding box from ``alos2App.py`` terminal log.
