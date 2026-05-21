@@ -1,8 +1,8 @@
-"""Example: organize ALOS-2 stripmap ZIP products by processable date."""
+"""Example: organize ALOS-4 stripmap ZIP products by processable date."""
 
-from iscewrap.alos2 import organize_alos2_stripmap_zips
+from iscewrap.alos4 import organize_alos4_stripmap_zips
 
-groups = organize_alos2_stripmap_zips(
+groups = organize_alos4_stripmap_zips(
     zip_files="raw_zips",
     output_dir="organized",
     polarizations=["HH"],  # optional; omit to extract all polarizations

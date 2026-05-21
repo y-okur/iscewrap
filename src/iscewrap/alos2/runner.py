@@ -29,6 +29,7 @@ def run_isce2_alos2app(
     end_step=None,
     log_file=None,
     steps=True,
+    env=None,
 ) -> subprocess.CompletedProcess:
     """Run ``alos2App.py`` and stream terminal output to a log file."""
     xml_file = Path(xml_file).resolve()
@@ -37,7 +38,7 @@ def run_isce2_alos2app(
 
     validate_alos2_steps(start_step, end_step)
 
-    cmd = [alos2app_cmd, str(xml_file)]
+    cmd = [str(alos2app_cmd), str(xml_file)]
 
     if steps:
         cmd.append("--steps")
@@ -67,6 +68,7 @@ def run_isce2_alos2app(
         process = subprocess.Popen(
             cmd,
             cwd=work_dir,
+            env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             universal_newlines=True,

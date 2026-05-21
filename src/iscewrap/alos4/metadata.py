@@ -1,4 +1,4 @@
-"""ALOS-2 product extraction and metadata parsing utilities."""
+"""ALOS-4 product extraction and metadata parsing utilities."""
 
 from __future__ import annotations
 
@@ -7,24 +7,36 @@ import re
 import shutil
 import zipfile
 
-from .constants import ALOS2_LOOK_TABLE
+from .organize import parse_alos4_summary
+
+
+ALOS4_IMG_PATTERN = re.compile(
+    r"IMG-"
+    r"(?P<polarization>[A-Z]{2})-"
+    r"ALOS4"
+    r"(?P<path>\d{3})"
+    r"(?P<frame>\d{4})"
+    r"(?P<date>\d{6})"
+    r"(?P<obs_mode>[A-Z]{3})"
+    r"PRA"
+    r"(?P<beam_code>\d{4})",
+    re.IGNORECASE,
+)
 
 
 VALID_POLARIZATIONS = {"HH", "HV", "VH", "VV"}
 
 
-def extract_alos2_zip(
+def extract_alos4_zip(
     zip_file: str | Path,
     output_dir: str | Path,
     *,
     polarizations: str | list[str] | tuple[str, ...] | set[str] | None = None,
 ) -> Path:
-    """Extract an ALOS-2 ZIP product into ``output_dir / zip_file.stem``.
+    """Extract an ALOS-4 ZIP product into ``output_dir / zip_file.stem``.
 
-    ``polarizations`` filters polarization-specific files such as ``IMG-HH-*``.
-    Shared CEOS/product metadata files are always extracted.
-
-    If the directory already exists, extraction is skipped.
+    ``polarizations`` filters polarization-specific files such as ``IMG-HH-*``
+    and ``BRS-HV-*``. Shared CEOS/product metadata files are always extracted.
     """
     zip_file = Path(zip_file).resolve()
     output_dir = Path(output_dir).resolve()
@@ -36,7 +48,6 @@ def extract_alos2_zip(
         return extract_dir
 
     extract_dir.mkdir(parents=True, exist_ok=True)
-
     print(f"Extracting {zip_file} -> {extract_dir}")
     with zipfile.ZipFile(zip_file, "r") as zf:
         for member in zf.infolist():
@@ -61,15 +72,17 @@ def extract_alos2_zip(
     return extract_dir
 
 
-def find_alos2_files(product_dir: str | Path) -> dict[str, list[Path]]:
-    """Find standard ALOS-2 product files inside a product directory."""
+def find_alos4_files(product_dir: str | Path) -> dict[str, list[Path]]:
+    """Find standard ALOS-4 CEOS product files inside a product directory."""
     product_dir = Path(product_dir).resolve()
-
     files = {
         "IMG": sorted(product_dir.rglob("IMG-*")),
         "LED": sorted(product_dir.rglob("LED-*")),
         "TRL": sorted(product_dir.rglob("TRL-*")),
         "VOL": sorted(product_dir.rglob("VOL-*")),
+        "BRS": sorted(product_dir.rglob("BRS-*")),
+        "summary": sorted(product_dir.rglob("summary-ALOS4*.txt")),
+        "kml": sorted(product_dir.rglob("*.kml")),
     }
 
     if len(files["IMG"]) == 0:
@@ -78,74 +91,57 @@ def find_alos2_files(product_dir: str | Path) -> dict[str, list[Path]]:
     return files
 
 
-def parse_alos2_img_filename(img_file: str | Path) -> dict[str, str]:
-    """Parse polarization, frame, date, and acquisition mode from an IMG filename."""
+def parse_alos4_img_filename(img_file: str | Path) -> dict[str, str]:
+    """Parse polarization, path, frame, date, and mode from an ALOS-4 IMG name."""
     img_file = Path(img_file)
-    name = img_file.name
-
-    pattern = (
-        r"IMG-"
-        r"(?P<pol>[A-Z]{2})-"
-        r"ALOS2(?P<track_frame>\d+)-"
-        r"(?P<date>\d{6})-"
-        r"(?P<mode>[A-Z]{3})"
-    )
-
-    match = re.search(pattern, name)
+    match = ALOS4_IMG_PATTERN.search(img_file.name)
 
     if match is None:
-        raise ValueError(f"Could not parse ALOS-2 IMG filename: {name}")
+        raise ValueError(f"Could not parse ALOS-4 IMG filename: {img_file.name}")
 
-    track_frame = match.group("track_frame")
-
+    groups = match.groupdict()
     return {
-        "polarization": match.group("pol"),
-        "frame": track_frame[-4:],
-        "date": match.group("date"),
-        "mode": match.group("mode"),
-        "full_name": name,
-    }
-
-
-def get_alos2_multilook_from_mode(mode: str) -> dict[str, int]:
-    """Return ISCE2 multilook parameters for an ALOS-2 acquisition mode."""
-    mode = mode.upper()
-
-    if mode not in ALOS2_LOOK_TABLE:
-        raise ValueError(
-            f"Unsupported ALOS-2 acquisition mode: {mode}. "
-            f"Known modes: {list(ALOS2_LOOK_TABLE.keys())}"
-        )
-
-    looks = ALOS2_LOOK_TABLE[mode]
-
-    return {
-        "number of range looks 1": looks["look1"][0],
-        "number of azimuth looks 1": looks["look1"][1],
-        "number of range looks 2": looks["look2"][0],
-        "number of azimuth looks 2": looks["look2"][1],
-        "number of range looks ion": looks["look_ion"][0],
-        "number of azimuth looks ion": looks["look_ion"][1],
+        "polarization": groups["polarization"].upper(),
+        "path": groups["path"],
+        "frame": groups["frame"].lstrip("0") or "0",
+        "frame_padded": groups["frame"],
+        "date": f"20{groups['date']}",
+        "obs_mode": groups["obs_mode"].upper(),
+        "beam_code": groups["beam_code"],
+        "beam": groups["beam_code"][-2:],
+        "full_name": img_file.name,
     }
 
 
 def detect_product_metadata(product_dir: str | Path) -> dict:
-    """Detect product root, first IMG file, parsed metadata, and multilook settings."""
-    files = find_alos2_files(product_dir)
-
-    img_file = files["IMG"][0]
+    """Detect ALOS-4 product files and lightweight metadata."""
+    files = find_alos4_files(product_dir)
+    img_file = _select_primary_img(files["IMG"])
     product_root = img_file.parent.resolve()
+    img_info = parse_alos4_img_filename(img_file)
 
-    img_info = parse_alos2_img_filename(img_file)
-    multilook = get_alos2_multilook_from_mode(img_info["mode"])
+    summary = {}
+    if files["summary"]:
+        summary = parse_alos4_summary(files["summary"][0])
 
     return {
         "product_root": product_root,
         "img_file": img_file,
         "img_info": img_info,
-        "multilook": multilook,
+        "summary": summary,
         "files": files,
     }
+
+
+def _select_primary_img(img_files: list[Path], preferred_polarization: str = "HH") -> Path:
+    preferred = [
+        img_file
+        for img_file in img_files
+        if img_file.name.startswith(f"IMG-{preferred_polarization.upper()}-")
+    ]
+    if preferred:
+        return preferred[0]
+    return img_files[0]
 
 
 def _normalize_polarizations(
@@ -173,7 +169,7 @@ def _should_extract_member(member_path: Path, polarizations: set[str] | None) ->
     if polarizations is None:
         return True
 
-    match = re.match(r"^IMG-(?P<polarization>[A-Z]{2})-", member_path.name, re.IGNORECASE)
+    match = re.match(r"^(?:IMG|BRS)-(?P<polarization>[A-Z]{2})-", member_path.name, re.IGNORECASE)
     if match is None:
         return True
 

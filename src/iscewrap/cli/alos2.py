@@ -22,6 +22,12 @@ def main() -> None:
     parser.add_argument("--gpu", action="store_true", help="Use GPU.")
     parser.add_argument("--no-steps", action="store_true", help="Do not pass --steps to alos2App.py.")
     parser.add_argument(
+        "--polarization",
+        action="append",
+        choices=["HH", "HV", "VH", "VV"],
+        help="Extract only this polarization from ZIP inputs. Can be repeated.",
+    )
+    parser.add_argument(
         "--geocode-file-list",
         nargs="*",
         default=None,
@@ -43,6 +49,7 @@ def main() -> None:
         start_step=args.start_step,
         end_step=args.end_step,
         steps=not args.no_steps,
+        polarizations=args.polarization,
         geocode_file_list=args.geocode_file_list,
     )
 

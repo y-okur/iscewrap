@@ -46,6 +46,7 @@ def process_alos2_pair(
     dense_offset_estimation_window_height=64,
     dense_offset_skip_width=32,
     dense_offset_skip_height=32,
+    polarizations=None,
 ) -> dict:
     """Create XML and optionally run ISCE2 ``alos2App.py`` for one ALOS-2 pair."""
     validate_alos2_steps(start_step, end_step)
@@ -63,12 +64,12 @@ def process_alos2_pair(
     run_dir.mkdir(parents=True, exist_ok=True)
 
     reference_dir = (
-        extract_alos2_zip(reference_input, raw_dir)
+        extract_alos2_zip(reference_input, raw_dir, polarizations=polarizations)
         if reference_input.suffix.lower() == ".zip"
         else reference_input
     )
     secondary_dir = (
-        extract_alos2_zip(secondary_input, raw_dir)
+        extract_alos2_zip(secondary_input, raw_dir, polarizations=polarizations)
         if secondary_input.suffix.lower() == ".zip"
         else secondary_input
     )
@@ -1798,7 +1799,6 @@ def convert_phase_to_height(
     track_xml: str | Path,
     baseline_log: str | Path,
     output_file: str | Path,
-    range_looks: int | None = None,
     phase_band: int | None = None,
     phase_is_complex: bool | None = None,
     incidence_band: int = 0,
@@ -1827,9 +1827,6 @@ def convert_phase_to_height(
         ``alos2App_full_terminal.log`` containing perpendicular baseline values.
     output_file : str or Path
         Output height raster path.
-    range_looks : int, optional
-        Range looks of the phase product. If omitted, inferred from
-        ``phase_file`` name like ``*_8rlks_16alks.*``.
     phase_band : int, optional
         Band to read if phase raster is multi-band. If omitted for an ISCE
         ``.unw`` file, band 1 is used automatically because band 0 is usually
@@ -1894,8 +1891,6 @@ def convert_phase_to_height(
     bperp_values = parse_bperp_values_from_log(baseline_log)
     bperp = make_bperp_image(shape=shape, **bperp_values)
 
-    if range_looks is None:
-        range_looks = infer_range_looks_from_filename(phase_file)
 
     track_meta = read_track_metadata(track_xml)
     wavelength = track_meta["radar_wavelength"]
@@ -1906,7 +1901,6 @@ def convert_phase_to_height(
     slant_range = make_slant_range_image_from_track_xml(
         shape=shape,
         track_xml=track_xml,
-        range_looks=range_looks,
     )
 
     height = phase_to_height(
@@ -1934,7 +1928,6 @@ def convert_phase_to_height(
         "track_xml": track_xml,
         "baseline_log": baseline_log,
         "shape": shape,
-        "range_looks": range_looks,
         "wavelength": wavelength,
         "starting_range": track_meta["starting_range"],
         "range_pixel_size": track_meta["range_pixel_size"],

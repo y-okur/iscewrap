@@ -15,6 +15,7 @@ from .organize import (
     parse_alos2_stripmap_zip_name,
 )
 from .runner import run_isce2_alos2app, validate_alos2_steps
+from iscewrap.geo import geo_to_kml, read_geo_extent
 from .workflow import (
     process_alos2_pair,
     generate_dem,
@@ -61,6 +62,8 @@ __all__ = [
     "plot_dem_comparison",
     "remove_mean_offset",
     "geocode_raster",
+    "geo_to_kml",
+    "read_geo_extent",
     "write_isce_geocoded_float",
     "phase_to_height",
     "read_radar_wavelength",

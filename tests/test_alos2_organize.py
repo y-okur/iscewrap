@@ -1,7 +1,11 @@
 from pathlib import Path
 import zipfile
 
-from iscewrap.alos2 import organize_alos2_stripmap_zips, parse_alos2_stripmap_zip_name
+from iscewrap.alos2 import (
+    extract_alos2_zip,
+    organize_alos2_stripmap_zips,
+    parse_alos2_stripmap_zip_name,
+)
 from iscewrap.alos2.workflow import _select_alos2_processing_dir
 
 
@@ -39,6 +43,48 @@ def test_organize_alos2_stripmap_zips_groups_frames_by_date(tmp_path):
     assert date_20160604["frames"] == ["3390"]
     assert (date_20160326["date_dir"] / "IMG-3390").read_text() == "a"
     assert (date_20160326["date_dir"] / "IMG-3400").read_text() == "b"
+
+
+def test_extract_alos2_zip_filters_polarization_files(tmp_path):
+    zip_file = tmp_path / "24-3390-RF2_6-20160326_+2.zip"
+    _make_zip(
+        zip_file,
+        {
+            "IMG-HH-ALOS20243390-160326-RF2": "hh",
+            "IMG-HV-ALOS20243390-160326-RF2": "hv",
+            "LED-ALOS20243390-160326-RF2": "leader",
+        },
+    )
+
+    extract_dir = extract_alos2_zip(zip_file, tmp_path / "raw", polarizations="HH")
+
+    assert (extract_dir / "IMG-HH-ALOS20243390-160326-RF2").exists()
+    assert not (extract_dir / "IMG-HV-ALOS20243390-160326-RF2").exists()
+    assert (extract_dir / "LED-ALOS20243390-160326-RF2").exists()
+
+
+def test_organize_alos2_stripmap_zips_filters_polarization_files(tmp_path):
+    zip_dir = tmp_path / "zips"
+    zip_dir.mkdir()
+    _make_zip(
+        zip_dir / "24-3390-RF2_6-20160326_+2.zip",
+        {
+            "IMG-HH-ALOS20243390-160326-RF2": "hh",
+            "IMG-HV-ALOS20243390-160326-RF2": "hv",
+            "LED-ALOS20243390-160326-RF2": "leader",
+        },
+    )
+
+    groups = organize_alos2_stripmap_zips(
+        zip_dir,
+        tmp_path / "organized",
+        polarizations=["HV"],
+    )
+    date_dir = groups["path_24/RF2_6"]["dates"]["20160326"]["date_dir"]
+
+    assert not (date_dir / "IMG-HH-ALOS20243390-160326-RF2").exists()
+    assert (date_dir / "IMG-HV-ALOS20243390-160326-RF2").exists()
+    assert (date_dir / "LED-ALOS20243390-160326-RF2").exists()
 
 
 def test_select_processing_dir_preserves_multi_frame_parent(tmp_path):

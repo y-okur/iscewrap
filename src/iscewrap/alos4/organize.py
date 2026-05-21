@@ -1,4 +1,4 @@
-"""Organize ALOS-2 products into ISCE2-ready acquisition folders."""
+"""Organize ALOS-4 products into ISCE2-ready acquisition folders."""
 
 from __future__ import annotations
 
@@ -9,20 +9,20 @@ import shutil
 import zipfile
 
 
-ALOS2_STRIPMAP_ZIP_PATTERN = re.compile(
+ALOS4_STRIPMAP_ZIP_PATTERN = re.compile(
     r"^(?P<path>\d+)-"
     r"(?P<frame>\d+)-"
-    r"(?P<mode>[A-Z0-9]+)_(?P<beam>\d+)-"
+    r"(?P<mode>[A-Z0-9]+)_(?P<beam>\d+)"
+    r"(?:_(?P<direction>[A-Z]))?-"
     r"(?P<date>\d{8})"
-    r"(?P<suffix>_[+-]?\d+)?"
     r"\.zip$",
     re.IGNORECASE,
 )
 
 
 @dataclass(frozen=True)
-class Alos2StripmapProduct:
-    """Metadata parsed from an ALOS-2 stripmap product ZIP filename."""
+class Alos4StripmapProduct:
+    """Metadata parsed from an ALOS-4 stripmap product ZIP filename."""
 
     zip_file: Path
     path: str
@@ -30,81 +30,80 @@ class Alos2StripmapProduct:
     mode: str
     beam: str
     date: str
-    suffix: str | None = None
+    direction: str | None = None
 
     @property
     def group_name(self) -> str:
-        """Return the ISCE-compatible stack group name for this product."""
+        """Return the stack group name for products that can be paired."""
         return f"path_{self.path}/{self.mode}_{self.beam}"
 
 
-def parse_alos2_stripmap_zip_name(zip_file: str | Path) -> Alos2StripmapProduct:
-    """Parse an ALOS-2 stripmap ZIP filename.
+def parse_alos4_stripmap_zip_name(zip_file: str | Path) -> Alos4StripmapProduct:
+    """Parse an ALOS-4 stripmap ZIP filename.
 
-    Expected names look like ``24-3390-RF2_6-20160326_+2.zip``.  Products
-    with the same path, mode, beam/off-nadir, and date can be placed in one
-    date folder so ISCE2 can stitch/process the frames together.
+    Expected names look like ``125-710-RU1_08_F-20250728.zip``. Products with
+    the same path, mode, beam/off-nadir, and date are extracted into the same
+    acquisition folder.
     """
     zip_file = Path(zip_file)
-    match = ALOS2_STRIPMAP_ZIP_PATTERN.match(zip_file.name)
+    match = ALOS4_STRIPMAP_ZIP_PATTERN.match(zip_file.name)
 
     if match is None:
-        raise ValueError(f"Not an ALOS-2 stripmap ZIP filename: {zip_file.name}")
+        raise ValueError(f"Not an ALOS-4 stripmap ZIP filename: {zip_file.name}")
 
     groups = match.groupdict()
-    return Alos2StripmapProduct(
+    return Alos4StripmapProduct(
         zip_file=zip_file,
         path=groups["path"],
         frame=groups["frame"],
         mode=groups["mode"].upper(),
         beam=groups["beam"],
         date=groups["date"],
-        suffix=groups["suffix"],
+        direction=None
+        if groups["direction"] is None
+        else groups["direction"].upper(),
     )
 
 
-def find_alos2_stripmap_zips(input_dir: str | Path) -> list[Path]:
-    """Find ALOS-2 stripmap ZIP products in a directory."""
+def parse_alos4_summary(summary_file: str | Path) -> dict[str, str]:
+    """Parse an ALOS-4 summary text file into a key/value dictionary."""
+    summary_file = Path(summary_file).resolve()
+    metadata: dict[str, str] = {}
+
+    with open(summary_file, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line or "=" not in line:
+                continue
+
+            key, value = line.split("=", 1)
+            metadata[key] = value.strip().strip('"')
+
+    return metadata
+
+
+def find_alos4_stripmap_zips(input_dir: str | Path) -> list[Path]:
+    """Find ALOS-4 stripmap ZIP products in a directory."""
     input_dir = Path(input_dir).resolve()
     return sorted(
         zip_file
         for zip_file in input_dir.glob("*.zip")
-        if ALOS2_STRIPMAP_ZIP_PATTERN.match(zip_file.name)
+        if ALOS4_STRIPMAP_ZIP_PATTERN.match(zip_file.name)
     )
 
 
-def organize_alos2_stripmap_zips(
+def organize_alos4_stripmap_zips(
     zip_files: str | Path | list[str | Path] | tuple[str | Path, ...],
     output_dir: str | Path,
     *,
     overwrite: bool = False,
     polarizations: str | list[str] | tuple[str, ...] | set[str] | None = None,
 ) -> dict[str, dict]:
-    """Extract ALOS-2 stripmap ZIPs into grouped YYYYMMDD folders.
-
-    Parameters
-    ----------
-    zip_files
-        A directory containing ZIP products, a single ZIP product, or an
-        iterable of ZIP products.
-    output_dir
-        Destination root. Products are written as
-        ``output_dir/path_<path>/<mode>_<beam>/<YYYYMMDD>/``.
-    overwrite
-        If True, files inside ZIP products replace existing files.
-    polarizations
-        Optional polarization filter such as ``"HH"`` or ``["HH", "HV"]``.
-        Shared CEOS/product metadata files are always extracted.
-
-    Returns
-    -------
-    dict
-        Group/date index with extracted paths and parsed product metadata.
-    """
+    """Extract ALOS-4 stripmap ZIPs into grouped YYYYMMDD folders."""
     output_dir = Path(output_dir).resolve()
     selected_polarizations = _normalize_polarizations(polarizations)
     products = [
-        parse_alos2_stripmap_zip_name(zip_file)
+        parse_alos4_stripmap_zip_name(zip_file)
         for zip_file in _normalize_zip_inputs(zip_files)
     ]
 
@@ -112,7 +111,7 @@ def organize_alos2_stripmap_zips(
     for product in products:
         date_dir = output_dir / product.group_name / product.date
         date_dir.mkdir(parents=True, exist_ok=True)
-        _extract_zip_flat(
+        _extract_zip(
             product.zip_file,
             date_dir,
             overwrite=overwrite,
@@ -150,6 +149,12 @@ def organize_alos2_stripmap_zips(
     return grouped
 
 
+def find_alos4_product_dirs(input_dir: str | Path) -> list[Path]:
+    """Find extracted ALOS-4 product directories containing summary files."""
+    input_dir = Path(input_dir).resolve()
+    return sorted({summary.parent for summary in input_dir.rglob("summary-ALOS4*.txt")})
+
+
 def _normalize_zip_inputs(
     zip_files: str | Path | list[str | Path] | tuple[str | Path, ...],
 ) -> list[Path]:
@@ -158,20 +163,19 @@ def _normalize_zip_inputs(
 
     if isinstance(zip_files, Path):
         if zip_files.is_dir():
-            return find_alos2_stripmap_zips(zip_files)
+            return find_alos4_stripmap_zips(zip_files)
         return [zip_files]
 
     return [Path(zip_file).resolve() for zip_file in zip_files]
 
 
-def _extract_zip_flat(
+def _extract_zip(
     zip_file: Path,
     output_dir: Path,
     *,
     overwrite: bool,
     polarizations: set[str] | None,
 ) -> None:
-    """Extract one product ZIP into an acquisition folder."""
     zip_file = zip_file.resolve()
 
     with zipfile.ZipFile(zip_file, "r") as zf:
@@ -224,7 +228,7 @@ def _should_extract_member(member_path: Path, polarizations: set[str] | None) ->
     if polarizations is None:
         return True
 
-    match = re.match(r"^IMG-(?P<polarization>[A-Z]{2})-", member_path.name, re.IGNORECASE)
+    match = re.match(r"^(?:IMG|BRS)-(?P<polarization>[A-Z]{2})-", member_path.name, re.IGNORECASE)
     if match is None:
         return True
 
