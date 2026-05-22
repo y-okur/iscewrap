@@ -37,6 +37,7 @@ from .workflow import (
     remove_mean_offset,
     geocode_raster,
     write_isce_geocoded_float,
+    write_isce_geocoded_raster,
 )
 from .xml import create_alos2app_xml
 
@@ -65,6 +66,7 @@ __all__ = [
     "geo_to_kml",
     "read_geo_extent",
     "write_isce_geocoded_float",
+    "write_isce_geocoded_raster",
     "phase_to_height",
     "read_radar_wavelength",
     "make_slant_range_image_from_track_xml",

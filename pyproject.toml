@@ -22,7 +22,10 @@ iscewrap-alos2 = "iscewrap.cli.alos2:main"
 iscewrap-alos4 = "iscewrap.cli.alos4:main"
 "alos4app.py" = "iscewrap.cli.alos4app:main"
 iscewrap-alos4app = "iscewrap.cli.alos4app:main"
+iscewrap-geocode-raster = "iscewrap.cli.geocode_raster:main"
 iscewrap-geo-to-kml = "iscewrap.cli.geo:main"
+iscewrap-plot-raster = "iscewrap.cli.plot:main"
+iscewrap-plot-complex = "iscewrap.cli.plot_complex:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

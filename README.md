@@ -12,7 +12,9 @@ Lightweight Python wrappers for ISCE/ISCE2 workflows.
 - Run `alos2App.py` with optional `--steps`, `--start`, and `--end`
 - Process one reference/secondary ALOS-2 pair from ZIP files or extracted folders
 - Process prototype ALOS-4 UWD-UWD pairs through the native ALOS-4 backend
+- Geocode single-band, multi-band, and complex radar-coordinate rasters with ISCE latitude/longitude rasters
 - Convert geocoded ISCE `.geo` rasters to KML/KMZ overlays
+- Plot real and complex ISCE rasters with amplitude-aware display scaling
 
 ## Documentation
 
@@ -199,6 +201,21 @@ The same prototype front door is available as:
 ```bash
 alos4app.py reference_dir secondary_dir alos_isce_work --end-step geocode
 ```
+
+## Geocode a raster
+
+Radar-coordinate rasters can be geocoded with matching ISCE latitude and
+longitude rasters:
+
+```bash
+iscewrap-geocode-raster input.rdr run/reference.lat run/reference.lon output.geo \
+  --resolution 0.0002777777777777778 \
+  --method nearest
+```
+
+The command prints progress by default; use `--quiet` to suppress it.  `nearest`
+is the default interpolation method because it is much faster for dense ISCE
+latitude/longitude grids.
 
 ## Convert `.geo` products to KML/KMZ
 

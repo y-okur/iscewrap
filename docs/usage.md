@@ -17,7 +17,10 @@ iscewrap-alos2
 iscewrap-alos4
 alos4app.py
 iscewrap-alos4app
+iscewrap-geocode-raster
 iscewrap-geo-to-kml
+iscewrap-plot-raster
+iscewrap-plot-complex
 ```
 
 ## Detect and Process ALOS Pairs
@@ -174,8 +177,51 @@ result = geocode_raster(
     lon_file="run/201127-210122_8rlks_16alks.lon",
     output_file="height_from_phase.geo",
     resolution=1 / 3600,
-    method="linear",
+    method="nearest",
 )
+```
+
+CLI:
+
+```bash
+iscewrap-geocode-raster height_from_phase.dem \
+  run/201127-210122_8rlks_16alks.lat \
+  run/201127-210122_8rlks_16alks.lon \
+  height_from_phase.geo \
+  --resolution 0.0002777777777777778 \
+  --method nearest
+```
+
+`nearest` is the default because it is much faster for dense ISCE latitude and
+longitude grids.  Use `--method linear` only for smaller rasters or when you can
+afford the extra interpolation cost.
+
+Multi-band rasters are handled band-by-band.  If `input_file` has two real
+bands, for example magnitude/coherence or magnitude/unwrapped phase, omitting
+`--band` geocodes both bands and writes a two-band BSQ `.geo` product:
+
+```bash
+iscewrap-geocode-raster filt_fine.unw ref.lat ref.lon filt_fine.unw.geo
+```
+
+To geocode only one band, pass a zero-based band index.  Band `1` is commonly
+the unwrapped phase band in ISCE `.unw` files:
+
+```bash
+iscewrap-geocode-raster filt_fine.unw ref.lat ref.lon filt_fine_phase.geo \
+  --band 1
+```
+
+Complex rasters are preserved as complex `CFLOAT` output.  The geocoder does not
+split a complex sample into two real bands; amplitude and phase should be formed
+from the complex geocoded raster afterward, or rendered directly with
+`iscewrap-geo-to-kml --value-mode magnitude` / `--value-mode phase`.
+
+Progress messages are printed by default.  Add `--quiet` to suppress them:
+
+```bash
+iscewrap-geocode-raster height_from_phase.dem ref.lat ref.lon height_from_phase.geo \
+  --quiet
 ```
 
 ## Convert `.geo` Products to KML/KMZ
@@ -260,6 +306,44 @@ Available `value_mode` choices:
 - `magnitude`: absolute value
 - `phase`: phase angle for complex rasters, or raw values for real rasters
 
+## Plot ISCE Rasters
+
+The package includes the plotting helpers from your external `plotdata.py` and
+`plotcomplexdata.py` scripts:
+
+```python
+from iscewrap import plotdata, plotcomplexdata
+
+plotdata("filt_fine.unw.geo.vrt", 1, None, "rainbow", None, None, "amplitude")
+plotcomplexdata("diff_int.geo.vrt", "phs", None, None, "wrapped phase")
+```
+
+For real rasters, `plotdata()` automatically applies `log10` scaling when the
+selected band is an amplitude band for common ISCE products:
+
+- `*.amp`, `*.amp.geo`: both bands are amplitude
+- `*.cor`, `*.cor.geo`: band 1 is amplitude, band 2 is coherence
+- `*.hgt`, `*.hgt.geo`: band 1 is amplitude, band 2 is DEM
+- `*.unw`, `*.unw.geo`: band 1 is amplitude, band 2 is unwrapped phase
+- `*.msk.unw`, `*.msk.unw.geo`: band 1 is masked amplitude, band 2 is masked unwrapped phase
+
+CLI:
+
+```bash
+iscewrap-plot-raster filt_fine.unw.geo.vrt
+iscewrap-plot-raster filt_fine.unw.geo.vrt --band 2 --cmap rainbow
+iscewrap-plot-raster filt_fine.unw.geo.vrt --band 1 --amplitude-scale linear
+iscewrap-plot-raster filt_fine.unw.geo.vrt --wrap --vmin -3.14 --vmax 3.14
+iscewrap-plot-raster filt_fine.unw.geo.vrt --title "masked amplitude"
+
+iscewrap-plot-complex diff_int.geo.vrt --display phs
+iscewrap-plot-complex diff_int.geo.vrt --display amp
+```
+
+`--amplitude-scale auto` is the default for `iscewrap-plot-raster`. Use
+`--amplitude-scale linear` to disable automatic amplitude log scaling, or
+`--amplitude-scale db` to display amplitude in dB.
+
 ## DEM Preparation
 
 When DEM/WBD paths are omitted, the ALOS workflows can run to `baseline`, parse
@@ -303,4 +387,3 @@ result["stage_compat_names"]
 result["reference_summary"]
 result["secondary_summary"]
 ```
-

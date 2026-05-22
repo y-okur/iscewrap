@@ -1966,14 +1966,66 @@ def write_isce_geocoded_float(
     dict
         Output file paths and shape.
     """
+    return write_isce_geocoded_raster(
+        output_file=output_file,
+        array=array,
+        lon_min=lon_min,
+        lat_max=lat_max,
+        resolution=resolution,
+        data_type="FLOAT",
+    )
+
+
+def write_isce_geocoded_raster(
+    output_file: str | Path,
+    array,
+    lon_min: float,
+    lat_max: float,
+    resolution: float,
+    data_type: str | None = None,
+) -> dict:
+    """Write a geocoded ISCE raw raster with XML and VRT sidecars.
+
+    ``array`` may be a 2D single-band raster or a 3D array normalized as
+    ``(bands, length, width)``.  Multi-band output is written as BSQ.  Complex
+    arrays are preserved as ISCE ``CFLOAT`` instead of being cast to real float.
+    """
     import numpy as np
 
     output_file = Path(output_file)
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
-    array = np.asarray(array, dtype=np.float32)
-    length, width = array.shape
-    array.tofile(output_file)
+    array = np.asarray(array)
+    if data_type is None:
+        data_type = "CFLOAT" if np.iscomplexobj(array) else "FLOAT"
+    data_type = data_type.upper()
+
+    if data_type == "CFLOAT":
+        array = array.astype(np.complex64)
+        vrt_dtype = "CFloat32"
+        pixel_bytes = 8
+    elif data_type == "FLOAT":
+        array = array.astype(np.float32)
+        vrt_dtype = "Float32"
+        pixel_bytes = 4
+    else:
+        raise ValueError(f"Unsupported geocoded output data_type: {data_type}")
+
+    if array.ndim == 2:
+        length, width = array.shape
+        number_bands = 1
+        scheme = "BIP"
+        array_to_write = array
+    elif array.ndim == 3:
+        number_bands, length, width = array.shape
+        scheme = "BSQ"
+        array_to_write = array
+    else:
+        raise ValueError(
+            f"Expected 2D or 3D array for geocoded raster, got shape {array.shape}"
+        )
+
+    array_to_write.tofile(output_file)
 
     xml_file = Path(str(output_file) + ".xml")
     vrt_file = Path(str(output_file) + ".vrt")
@@ -1997,13 +2049,13 @@ def write_isce_geocoded_float(
         <property name="size"><value>{length}</value></property>
         <property name="startingvalue"><value>{lat_max}</value></property>
     </component>
-    <property name="data_type"><value>FLOAT</value></property>
+    <property name="data_type"><value>{data_type}</value></property>
     <property name="extra_file_name"><value>{output_file.name}.vrt</value></property>
     <property name="family"><value>image</value></property>
     <property name="file_name"><value>{output_file.resolve()}</value></property>
     <property name="length"><value>{length}</value></property>
-    <property name="number_bands"><value>1</value></property>
-    <property name="scheme"><value>BIP</value></property>
+    <property name="number_bands"><value>{number_bands}</value></property>
+    <property name="scheme"><value>{scheme}</value></property>
     <property name="width"><value>{width}</value></property>
     <property name="xmax"><value>{lon_max}</value></property>
     <property name="xmin"><value>{lon_min}</value></property>
@@ -2012,17 +2064,33 @@ def write_isce_geocoded_float(
         encoding="utf-8",
     )
 
+    if number_bands == 1:
+        band_xml = _vrt_raw_band(
+            band=1,
+            data_type=vrt_dtype,
+            source_name=output_file.name,
+            image_offset=0,
+            pixel_offset=pixel_bytes,
+            line_offset=width * pixel_bytes,
+        )
+    else:
+        band_xml = "\n".join(
+            _vrt_raw_band(
+                band=band + 1,
+                data_type=vrt_dtype,
+                source_name=output_file.name,
+                image_offset=band * length * width * pixel_bytes,
+                pixel_offset=pixel_bytes,
+                line_offset=width * pixel_bytes,
+            )
+            for band in range(number_bands)
+        )
+
     vrt_file.write_text(
         f"""<VRTDataset rasterXSize="{width}" rasterYSize="{length}">
     <SRS>EPSG:4326</SRS>
     <GeoTransform>{lon_min}, {resolution}, 0.0, {lat_max}, 0.0, {-resolution}</GeoTransform>
-    <VRTRasterBand dataType="Float32" band="1" subClass="VRTRawRasterBand">
-        <SourceFilename relativeToVRT="1">{output_file.name}</SourceFilename>
-        <ByteOrder>LSB</ByteOrder>
-        <ImageOffset>0</ImageOffset>
-        <PixelOffset>4</PixelOffset>
-        <LineOffset>{width * 4}</LineOffset>
-    </VRTRasterBand>
+{band_xml}
 </VRTDataset>
 """,
         encoding="utf-8",
@@ -2033,7 +2101,28 @@ def write_isce_geocoded_float(
         "xml_file": xml_file,
         "vrt_file": vrt_file,
         "shape": array.shape,
+        "data_type": data_type,
+        "number_bands": number_bands,
+        "scheme": scheme,
     }
+
+
+def _vrt_raw_band(
+    *,
+    band: int,
+    data_type: str,
+    source_name: str,
+    image_offset: int,
+    pixel_offset: int,
+    line_offset: int,
+) -> str:
+    return f"""    <VRTRasterBand dataType="{data_type}" band="{band}" subClass="VRTRawRasterBand">
+        <SourceFilename relativeToVRT="1">{source_name}</SourceFilename>
+        <ByteOrder>LSB</ByteOrder>
+        <ImageOffset>{image_offset}</ImageOffset>
+        <PixelOffset>{pixel_offset}</PixelOffset>
+        <LineOffset>{line_offset}</LineOffset>
+    </VRTRasterBand>"""
 
 
 def geocode_raster(
@@ -2042,8 +2131,10 @@ def geocode_raster(
     lon_file: str | Path,
     output_file: str | Path,
     resolution: float = 1 / 3600,
-    method: str = "linear",
+    method: str = "nearest",
     nodata=float("nan"),
+    band: int | None = None,
+    verbose: bool = True,
 ) -> dict:
     """Geocode a radar-coordinate raster using ISCE latitude/longitude rasters.
 
@@ -2061,10 +2152,16 @@ def geocode_raster(
         Output raw raster path, e.g. ``height_from_phase_geo.dem``.
     resolution : float, default 1/3600
         Output geographic resolution in degrees.
-    method : {"linear", "nearest", "cubic"}, default "linear"
+    method : {"linear", "nearest", "cubic"}, default "nearest"
         Interpolation method passed to ``scipy.interpolate.griddata``.
     nodata : float, default NaN
         Fill value for output pixels outside interpolation support.
+    band : int, optional
+        Zero-based band to geocode.  If omitted, all input bands are geocoded.
+        Complex single-band rasters are preserved as complex output.
+    verbose : bool, default True
+        Print progress messages while reading, masking, interpolating, and
+        writing the geocoded output.
 
     Returns
     -------
@@ -2079,30 +2176,63 @@ def geocode_raster(
     lon_file = Path(lon_file)
     output_file = Path(output_file)
 
-    data = read_isce_raster(input_file)
-    lat = read_isce_raster(lat_file)
-    lon = read_isce_raster(lon_file)
+    def log(message: str) -> None:
+        if verbose:
+            print(f"[iscewrap-geocode] {message}", flush=True)
 
-    if data.shape != lat.shape or data.shape != lon.shape:
+    log(f"reading input raster: {input_file}")
+    input_meta = read_isce_raster_metadata(input_file)
+    data = read_isce_raster(input_file, band=band, metadata=input_meta)
+    log(f"reading latitude raster: {lat_file}")
+    lat = read_isce_raster(lat_file)
+    log(f"reading longitude raster: {lon_file}")
+    lon = read_isce_raster(lon_file)
+    log(f"input shape: {data.shape}")
+
+    if lat.shape != lon.shape:
         raise ValueError(
             f"Shape mismatch:\n"
-            f"data: {data.shape}\n"
             f"lat : {lat.shape}\n"
             f"lon : {lon.shape}"
         )
 
+    if data.ndim == 2:
+        data_bands = [data]
+        output_single_band = True
+    elif data.ndim == 3:
+        data_bands = [data[index] for index in range(data.shape[0])]
+        output_single_band = False
+    else:
+        raise ValueError(f"Unsupported input raster shape: {data.shape}")
+
+    for index, data_band in enumerate(data_bands):
+        if data_band.shape != lat.shape:
+            raise ValueError(
+                f"Shape mismatch for input band {index}:\n"
+                f"data: {data_band.shape}\n"
+                f"lat : {lat.shape}\n"
+                f"lon : {lon.shape}"
+            )
+
     mask = (
-        np.isfinite(data)
-        & np.isfinite(lat)
+        np.isfinite(lat)
         & np.isfinite(lon)
         & (lat != 0)
         & (lon != 0)
     )
+    for data_band in data_bands:
+        mask &= np.isfinite(data_band)
 
     if not np.any(mask):
         raise ValueError("No valid pixels found after masking data/lat/lon.")
 
-    values = data[mask]
+    valid_pixels = int(np.count_nonzero(mask))
+    total_pixels = int(mask.size)
+    log(
+        "valid pixels after finite/nonzero lat/lon mask: "
+        f"{valid_pixels}/{total_pixels}"
+    )
+
     lats = lat[mask]
     lons = lon[mask]
 
@@ -2110,26 +2240,48 @@ def geocode_raster(
     lon_max = float(np.nanmax(lons))
     lat_min = float(np.nanmin(lats))
     lat_max = float(np.nanmax(lats))
+    log(
+        "extent: "
+        f"lon=[{lon_min}, {lon_max}], lat=[{lat_min}, {lat_max}]"
+    )
 
     grid_lon = np.arange(lon_min, lon_max + resolution, resolution)
     grid_lat = np.arange(lat_max, lat_min - resolution, -resolution)
 
     grid_lon2d, grid_lat2d = np.meshgrid(grid_lon, grid_lat)
+    log(
+        "interpolating to geographic grid: "
+        f"shape={grid_lon2d.shape}, resolution={resolution}, method={method}"
+    )
 
-    geo = griddata(
-        np.column_stack([lons, lats]),
-        values,
-        (grid_lon2d, grid_lat2d),
-        method=method,
-        fill_value=nodata,
-    ).astype(np.float32)
+    points = np.column_stack([lons, lats])
+    geocoded_bands = []
+    for index, data_band in enumerate(data_bands):
+        if len(data_bands) > 1:
+            log(f"interpolating band {index}")
+        geocoded_bands.append(
+            griddata(
+                points,
+                data_band[mask],
+                (grid_lon2d, grid_lat2d),
+                method=method,
+                fill_value=nodata,
+            )
+        )
 
-    out = write_isce_geocoded_float(
+    if output_single_band:
+        geo = geocoded_bands[0]
+    else:
+        geo = np.stack(geocoded_bands, axis=0)
+
+    log(f"writing geocoded raster: {output_file}")
+    out = write_isce_geocoded_raster(
         output_file=output_file,
         array=geo,
         lon_min=lon_min,
         lat_max=lat_max,
         resolution=resolution,
+        data_type="CFLOAT" if np.iscomplexobj(geo) else "FLOAT",
     )
 
     out.update(
@@ -2142,9 +2294,12 @@ def geocode_raster(
             },
             "resolution": resolution,
             "method": method,
+            "band": band,
+            "input_number_bands": input_meta["number_bands"],
         }
     )
 
+    log("done")
     return out
 
 
