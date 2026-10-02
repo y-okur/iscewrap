@@ -7,7 +7,7 @@ This is a quick reference for the current ALOS-2, ALOS-4, and `.geo` utilities.
 From the repository root:
 
 ```bash
-pip install -e .
+pip install .
 ```
 
 After installation, the command line tools include:
@@ -17,9 +17,10 @@ iscewrap-alos2
 iscewrap-alos4
 alos4app.py
 iscewrap-alos4app
-iscewrap-geocode-raster
+iscewrap-geocode
+iscewrap-geocode-latlon
 iscewrap-geo-to-kml
-iscewrap-plot-raster
+iscewrap-plot-real
 iscewrap-plot-complex
 ```
 
@@ -92,7 +93,7 @@ iscewrap-alos4 REF_DIR SEC_DIR WORK_DIR \
   --start-step preprocess \
   --end-step baseline \
   --polarization HH \
-  --range-sampling-rate 98=98242186.9
+  --range-sampling-rate 98=98242186.875
 ```
 
 Native backend is the default.  To force the older visible symlink staging:
@@ -163,7 +164,39 @@ The organizer groups products like:
 organized/path_125/RU1_08/20250728/
 ```
 
-## Geocode a Radar Raster
+## Native ISCE2 Geocode
+
+`iscewrap-geocode` geocodes one raster with the same ISCE2 `geozero` pipeline
+that `alos2App.py` uses, without running the whole application step.  This is
+the default geocoding command to use for ALOS products when you want outputs on
+the native ISCE2 grid.
+
+Range and azimuth looks are inferred from names like `*_8rlks_16alks.unw`, but
+can be overridden.
+
+```bash
+iscewrap-geocode filt_250728-250811_8rlks_16alks.unw \
+  --track ../250728.track.xml \
+  --dem /path/to/dem.dem.wgs84 \
+  --bbox 35.75 36.475 139.47083333333333 140.3325
+```
+
+Optional overrides:
+
+```bash
+iscewrap-geocode filt_250728-250811_8rlks_16alks.unw \
+  --track ../250728.track.xml \
+  --dem /path/to/dem.dem.wgs84 \
+  --grid-reference filt_250728-250811_8rlks_16alks_msk.unw.geo \
+  --output custom_name.unw.geo \
+  --interp bilinear
+```
+
+Use `--grid-reference` when you want exact alignment with an existing native
+ISCE2 geocoded product. It reads that product's VRT/XML extent and uses the
+same south/north/west/east geocode bbox.
+
+## Lat/Lon Array Geocode
 
 This helper converts a radar-coordinate raster using ISCE latitude/longitude
 rasters and writes a geocoded raw raster with `.xml` and `.vrt` sidecars.
@@ -184,7 +217,7 @@ result = geocode_raster(
 CLI:
 
 ```bash
-iscewrap-geocode-raster height_from_phase.dem \
+iscewrap-geocode-latlon height_from_phase.dem \
   run/201127-210122_8rlks_16alks.lat \
   run/201127-210122_8rlks_16alks.lon \
   height_from_phase.geo \
@@ -196,19 +229,28 @@ iscewrap-geocode-raster height_from_phase.dem \
 longitude grids.  Use `--method linear` only for smaller rasters or when you can
 afford the extra interpolation cost.
 
+Nearest-neighbor interpolation can otherwise smear the nearest valid radar
+sample into pixels just outside the real swath footprint.  The geocoder masks
+outside the source footprint by default so those edge pixels become nodata.
+Disable this only for debugging:
+
+```bash
+iscewrap-geocode-latlon input.rdr ref.lat ref.lon output.geo --no-edge-mask
+```
+
 Multi-band rasters are handled band-by-band.  If `input_file` has two real
 bands, for example magnitude/coherence or magnitude/unwrapped phase, omitting
 `--band` geocodes both bands and writes a two-band BSQ `.geo` product:
 
 ```bash
-iscewrap-geocode-raster filt_fine.unw ref.lat ref.lon filt_fine.unw.geo
+iscewrap-geocode-latlon filt_fine.unw ref.lat ref.lon filt_fine.unw.geo
 ```
 
 To geocode only one band, pass a zero-based band index.  Band `1` is commonly
 the unwrapped phase band in ISCE `.unw` files:
 
 ```bash
-iscewrap-geocode-raster filt_fine.unw ref.lat ref.lon filt_fine_phase.geo \
+iscewrap-geocode-latlon filt_fine.unw ref.lat ref.lon filt_fine_phase.geo \
   --band 1
 ```
 
@@ -220,7 +262,7 @@ from the complex geocoded raster afterward, or rendered directly with
 Progress messages are printed by default.  Add `--quiet` to suppress them:
 
 ```bash
-iscewrap-geocode-raster height_from_phase.dem ref.lat ref.lon height_from_phase.geo \
+iscewrap-geocode-latlon height_from_phase.dem ref.lat ref.lon height_from_phase.geo \
   --quiet
 ```
 
@@ -323,24 +365,26 @@ selected band is an amplitude band for common ISCE products:
 
 - `*.amp`, `*.amp.geo`: both bands are amplitude
 - `*.cor`, `*.cor.geo`: band 1 is amplitude, band 2 is coherence
-- `*.hgt`, `*.hgt.geo`: band 1 is amplitude, band 2 is DEM
 - `*.unw`, `*.unw.geo`: band 1 is amplitude, band 2 is unwrapped phase
 - `*.msk.unw`, `*.msk.unw.geo`: band 1 is masked amplitude, band 2 is masked unwrapped phase
+
+`*.hgt` and `*.hgt.geo` products are single-band real height rasters and stay
+linear by default.
 
 CLI:
 
 ```bash
-iscewrap-plot-raster filt_fine.unw.geo.vrt
-iscewrap-plot-raster filt_fine.unw.geo.vrt --band 2 --cmap rainbow
-iscewrap-plot-raster filt_fine.unw.geo.vrt --band 1 --amplitude-scale linear
-iscewrap-plot-raster filt_fine.unw.geo.vrt --wrap --vmin -3.14 --vmax 3.14
-iscewrap-plot-raster filt_fine.unw.geo.vrt --title "masked amplitude"
+iscewrap-plot-real filt_fine.unw.geo.vrt
+iscewrap-plot-real filt_fine.unw.geo.vrt --band 2 --cmap rainbow
+iscewrap-plot-real filt_fine.unw.geo.vrt --band 1 --amplitude-scale linear
+iscewrap-plot-real filt_fine.unw.geo.vrt --wrap --vmin -3.14 --vmax 3.14
+iscewrap-plot-real filt_fine.unw.geo.vrt --title "masked amplitude"
 
 iscewrap-plot-complex diff_int.geo.vrt --display phs
 iscewrap-plot-complex diff_int.geo.vrt --display amp
 ```
 
-`--amplitude-scale auto` is the default for `iscewrap-plot-raster`. Use
+`--amplitude-scale auto` is the default for `iscewrap-plot-real`. Use
 `--amplitude-scale linear` to disable automatic amplitude log scaling, or
 `--amplitude-scale db` to display amplitude in dB.
 

@@ -17,8 +17,12 @@ from .metadata import detect_product_metadata, parse_alos4_img_filename
 
 
 DEFAULT_ALOS4_RANGE_SAMPLING_RATES = {
-    # UWD beam 08.  The ALOS-2 reader indexes this table by integer MHz code.
-    98: 98_242_186.9,
+    # JAXA PALSAR-3 CEOS sampling-frequency settings.  The ALOS-2 reader
+    # indexes this table by integer MHz code.
+    98: 98_242_186.875,
+    49: 49_121_093.4375,
+    32: 32_747_395.625,
+    16: 16_373_697.8125,
 }
 
 

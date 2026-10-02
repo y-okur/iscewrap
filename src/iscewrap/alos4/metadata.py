@@ -10,16 +10,24 @@ import zipfile
 from .organize import parse_alos4_summary
 
 
-ALOS4_IMG_PATTERN = re.compile(
-    r"IMG-"
-    r"(?P<polarization>[A-Z]{2})-"
+ALOS4_SCENE_ID_PATTERN = re.compile(
+    r"(?P<scene_id>"
     r"ALOS4"
     r"(?P<path>\d{3})"
     r"(?P<frame>\d{4})"
     r"(?P<date>\d{6})"
     r"(?P<obs_mode>[A-Z]{3})"
-    r"PRA"
-    r"(?P<beam_code>\d{4})",
+    r"(?P<prf_marker>[P_])"
+    r"(?P<look_direction>[RL])"
+    r"(?P<orbit_direction>[AD])"
+    r"(?P<beam_code>\d{4}))",
+    re.IGNORECASE,
+)
+
+ALOS4_IMG_PATTERN = re.compile(
+    r"IMG-"
+    r"(?P<polarization>[A-Z]{2})-"
+    + ALOS4_SCENE_ID_PATTERN.pattern,
     re.IGNORECASE,
 )
 
@@ -91,8 +99,39 @@ def find_alos4_files(product_dir: str | Path) -> dict[str, list[Path]]:
     return files
 
 
-def parse_alos4_img_filename(img_file: str | Path) -> dict[str, str]:
-    """Parse polarization, path, frame, date, and mode from an ALOS-4 IMG name."""
+def parse_alos4_scene_id(scene_id: str) -> dict[str, str | bool]:
+    """Parse the fields encoded in an ALOS-4 Scene_ID."""
+    match = ALOS4_SCENE_ID_PATTERN.search(scene_id)
+
+    if match is None:
+        raise ValueError(f"Could not parse ALOS-4 Scene_ID: {scene_id}")
+
+    groups = match.groupdict()
+    prf_marker = groups["prf_marker"].upper()
+    look_direction = groups["look_direction"].upper()
+    orbit_direction = groups["orbit_direction"].upper()
+    return {
+        "scene_id": groups["scene_id"].upper(),
+        "path": groups["path"],
+        "frame": groups["frame"].lstrip("0") or "0",
+        "frame_padded": groups["frame"],
+        "date": f"20{groups['date']}",
+        "obs_mode": groups["obs_mode"].upper(),
+        "prf_marker": prf_marker,
+        "fixed_prf": prf_marker == "P",
+        "look_direction": look_direction,
+        "look_direction_name": {"R": "right", "L": "left"}[look_direction],
+        "orbit_direction": orbit_direction,
+        "orbit_direction_name": {"A": "ascending", "D": "descending"}[
+            orbit_direction
+        ],
+        "beam_code": groups["beam_code"],
+        "beam": groups["beam_code"][-2:],
+    }
+
+
+def parse_alos4_img_filename(img_file: str | Path) -> dict[str, str | bool]:
+    """Parse polarization and Scene_ID fields from an ALOS-4 IMG name."""
     img_file = Path(img_file)
     match = ALOS4_IMG_PATTERN.search(img_file.name)
 
@@ -101,14 +140,8 @@ def parse_alos4_img_filename(img_file: str | Path) -> dict[str, str]:
 
     groups = match.groupdict()
     return {
+        **parse_alos4_scene_id(groups["scene_id"]),
         "polarization": groups["polarization"].upper(),
-        "path": groups["path"],
-        "frame": groups["frame"].lstrip("0") or "0",
-        "frame_padded": groups["frame"],
-        "date": f"20{groups['date']}",
-        "obs_mode": groups["obs_mode"].upper(),
-        "beam_code": groups["beam_code"],
-        "beam": groups["beam_code"][-2:],
         "full_name": img_file.name,
     }
 

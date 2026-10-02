@@ -16,6 +16,7 @@ from .metadata import (
     extract_alos4_zip,
     find_alos4_files,
     parse_alos4_img_filename,
+    parse_alos4_scene_id,
 )
 from .workflow import process_alos4_pair, stage_alos4_as_alos2_names
 from .xml import create_alos4app_xml
@@ -32,6 +33,7 @@ __all__ = [
     "install_alos4_backend",
     "organize_alos4_stripmap_zips",
     "parse_alos4_img_filename",
+    "parse_alos4_scene_id",
     "parse_alos4_stripmap_zip_name",
     "parse_alos4_summary",
     "process_alos4_pair",

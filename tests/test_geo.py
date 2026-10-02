@@ -7,10 +7,15 @@ from iscewrap.geo import geo_to_kml, read_geo_extent
 from iscewrap.plot import (
     infer_isce_product_kind,
     is_isce_amplitude_band,
+    plot_wbd,
     prepare_plot_values,
 )
 from iscewrap.alos2.workflow import (
+    _write_isce_raster_xml,
+    _write_vrt,
+    _write_nasa_swbd_mosaic,
     geocode_raster,
+    infer_looks_from_filename,
     read_isce_raster,
     read_isce_raster_metadata,
     write_isce_geocoded_float,
@@ -37,6 +42,17 @@ def test_geo_to_kml_writes_ground_overlay(tmp_path):
     assert "<south>19.7</south>" in kml_text
     assert "<east>10.4</east>" in kml_text
     assert "<west>10.0</west>" in kml_text
+
+
+def test_infer_looks_from_filename():
+    assert infer_looks_from_filename("filt_250728-250811_8rlks_16alks.unw") == (
+        8,
+        16,
+    )
+    assert infer_looks_from_filename("250728-250811_2rlks_4alks.cor.geo") == (
+        2,
+        4,
+    )
 
 
 def test_geo_to_kmz_packages_kml_and_png(tmp_path):
@@ -190,6 +206,50 @@ def test_geocode_raster_preserves_complex_input(tmp_path):
     assert np.iscomplexobj(geocoded)
 
 
+def test_geocode_raster_masks_outside_source_footprint(tmp_path):
+    raster = tmp_path / "slanted.rdr"
+    lat = tmp_path / "lat.rdr"
+    lon = tmp_path / "lon.rdr"
+    output = tmp_path / "slanted.geo"
+
+    data = np.ones((4, 4), dtype=np.float32)
+    lat_data = np.array(
+        [
+            [3.0, 3.0, 3.0, 0.0],
+            [2.0, 2.0, 2.0, 2.0],
+            [1.0, 1.0, 1.0, 1.0],
+            [0.0, 0.0, 0.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    lon_data = np.array(
+        [
+            [0.0, 1.0, 2.0, 0.0],
+            [0.0, 1.0, 2.0, 3.0],
+            [0.0, 1.0, 2.0, 3.0],
+            [0.0, 0.0, 0.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    write_isce_geocoded_float(raster, data, 0.0, 3.0, 1.0)
+    write_isce_geocoded_float(lat, lat_data, 0.0, 3.0, 1.0)
+    write_isce_geocoded_float(lon, lon_data, 0.0, 3.0, 1.0)
+
+    geocode_raster(
+        input_file=raster,
+        lat_file=lat,
+        lon_file=lon,
+        output_file=output,
+        resolution=1.0,
+        method="nearest",
+        verbose=False,
+    )
+
+    geocoded = read_isce_raster(output)
+
+    assert np.isnan(geocoded[0, -1])
+
+
 def test_infer_isce_amplitude_products():
     assert infer_isce_product_kind("foo.amp") == "amp"
     assert infer_isce_product_kind("foo.amp.geo") == "amp"
@@ -204,7 +264,7 @@ def test_isce_amplitude_band_rules():
     assert is_isce_amplitude_band("foo.amp.geo", 2)
     assert is_isce_amplitude_band("foo.cor.geo", 1)
     assert not is_isce_amplitude_band("foo.cor.geo", 2)
-    assert is_isce_amplitude_band("foo.hgt.geo", 1)
+    assert not is_isce_amplitude_band("foo.hgt.geo", 1)
     assert not is_isce_amplitude_band("foo.hgt.geo", 2)
     assert is_isce_amplitude_band("foo.unw.geo", 1)
     assert not is_isce_amplitude_band("foo.unw.geo", 2)
@@ -232,3 +292,80 @@ def test_prepare_plot_values_auto_log_scales_amplitude_band():
     assert np.allclose(scaled, [[0.0, 1.0, 2.0]])
     assert unscaled_mode == "linear"
     assert np.array_equal(unscaled, data)
+
+
+def test_plot_wbd_writes_png(tmp_path):
+    raster = tmp_path / "sample.wbd"
+    data = np.array(
+        [
+            [0, 0, 1, 1],
+            [0, 1, 1, 2],
+            [1, 1, 0, 0],
+        ],
+        dtype=np.uint8,
+    )
+    data.tofile(raster)
+    _write_isce_raster_xml(
+        raster,
+        width=4,
+        length=3,
+        west=10,
+        east=14,
+        south=17,
+        north=20,
+        delta=1.0,
+        data_type="BYTE",
+        family="image",
+        image_type=None,
+        reference=None,
+    )
+    _write_vrt(
+        raster,
+        width=4,
+        length=3,
+        west=10,
+        north=20,
+        delta=1.0,
+        vrt_dtype="Byte",
+        pixel_offset=1,
+        line_offset=4,
+    )
+
+    output = tmp_path / "sample_wbd.png"
+    plot_wbd(raster, output_file=output, show=False)
+
+    assert output.exists()
+    assert output.stat().st_size > 0
+
+
+def test_write_nasa_swbd_mosaic_creates_isce_byte_raster(tmp_path):
+    def make_tile(path, value):
+        tile = np.full((3601, 3601), value, dtype=np.uint8)
+        with zipfile.ZipFile(path, "w") as zf:
+            zf.writestr(path.with_suffix("").name, tile.tobytes())
+
+    north_zip = tmp_path / "N01E010.SRTMSWBD.raw.zip"
+    south_zip = tmp_path / "N00E010.SRTMSWBD.raw.zip"
+    make_tile(north_zip, 255)
+    make_tile(south_zip, 0)
+
+    output = tmp_path / "swbdLat_N00_N02_Lon_E010_E011.wbd"
+    _write_nasa_swbd_mosaic(
+        tile_zip_files={
+            (1, 10): north_zip,
+            (0, 10): south_zip,
+        },
+        output_file=output,
+        south=0,
+        north=2,
+        west=10,
+        east=11,
+    )
+
+    meta = read_isce_raster_metadata(output)
+    data = read_isce_raster(output, metadata=meta)
+
+    assert meta["data_type"] == "BYTE"
+    assert data.shape == (7200, 3600)
+    assert np.all(data[:3600, :] == 255)
+    assert np.all(data[3600:, :] == 0)

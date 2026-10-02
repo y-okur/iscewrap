@@ -8,7 +8,6 @@ from pathlib import Path
 AMPLITUDE_PRODUCT_RULES = {
     "amp": "all",
     "cor": "first",
-    "hgt": "first",
     "unw": "first",
     "msk.unw": "first",
 }
@@ -111,6 +110,83 @@ def plot_raster(
         fig.colorbar(cax, orientation=colorbar_orientation, shrink=0.75)
     ax.set_aspect(aspect)
     plt.show()
+
+
+def plot_wbd(
+    input_file: str | Path,
+    output_file: str | Path | None = None,
+    title: str | None = None,
+    show: bool = True,
+    max_pixels: int = 4_000_000,
+):
+    """Plot an ISCE/SWBD water-body mask.
+
+    WBD files are categorical byte rasters.  The convention used by ISCE's ALOS
+    WBD products is treated as 0 = land/valid and -1 = water.  In unsigned BYTE
+    rasters, -1 is stored as 255.  Any other values are displayed as unknown.
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from matplotlib.colors import BoundaryNorm, ListedColormap
+
+    from .alos2.workflow import read_isce_raster, read_isce_raster_metadata
+    from .geo import read_geo_extent
+
+    input_file = Path(input_file).resolve()
+    if not input_file.exists():
+        raise FileNotFoundError(f"Input file not found: {input_file}")
+
+    meta = read_isce_raster_metadata(input_file)
+    data = read_isce_raster(input_file, metadata=meta)
+    if data.ndim != 2:
+        raise ValueError(f"Expected single-band WBD raster, got shape {data.shape}")
+
+    data = np.asarray(data)
+    plot_data = np.full(data.shape, 2, dtype=np.uint8)
+    plot_data[data == 0] = 0
+    plot_data[(data == -1) | (data == 255) | (data == 1)] = 1
+
+    step = max(1, int(np.ceil(np.sqrt(plot_data.size / max_pixels))))
+    if step > 1:
+        plot_data = plot_data[::step, ::step]
+
+    extent = read_geo_extent(input_file)
+    cmap = ListedColormap(["#d8c27a", "#2b83ba", "#8f8f8f"])
+    norm = BoundaryNorm([-0.5, 0.5, 1.5, 2.5], cmap.N)
+
+    fig, ax = plt.subplots(figsize=(8, 6), dpi=150)
+    image = ax.imshow(
+        plot_data,
+        cmap=cmap,
+        norm=norm,
+        extent=[
+            extent["west"],
+            extent["east"],
+            extent["south"],
+            extent["north"],
+        ],
+        interpolation="nearest",
+    )
+    ax.set_title(title or input_file.name)
+    ax.set_xlabel("Longitude")
+    ax.set_ylabel("Latitude")
+    ax.set_aspect("equal")
+
+    cbar = fig.colorbar(image, ax=ax, ticks=[0, 1, 2], shrink=0.75)
+    cbar.ax.set_yticklabels(["land", "water", "other"])
+    fig.tight_layout()
+
+    if output_file is not None:
+        output_file = Path(output_file).resolve()
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(output_file, bbox_inches="tight")
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+    return fig, ax
 
 
 def plotdata(

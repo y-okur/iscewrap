@@ -8,6 +8,7 @@ from iscewrap.alos4 import (
     find_alos4_product_dirs,
     organize_alos4_stripmap_zips,
     parse_alos4_img_filename,
+    parse_alos4_scene_id,
     parse_alos4_stripmap_zip_name,
     parse_alos4_summary,
     process_alos4_pair,
@@ -66,6 +67,24 @@ def test_parse_alos4_img_filename():
     assert info["date"] == "20250728"
     assert info["obs_mode"] == "UWD"
     assert info["beam"] == "08"
+    assert info["fixed_prf"] is True
+    assert info["look_direction_name"] == "right"
+    assert info["orbit_direction_name"] == "ascending"
+
+
+def test_parse_alos4_scene_id_nominal_prf():
+    info = parse_alos4_scene_id("ALOS41112222250602UWD_RA0106")
+
+    assert info["path"] == "111"
+    assert info["frame"] == "2222"
+    assert info["date"] == "20250602"
+    assert info["obs_mode"] == "UWD"
+    assert info["prf_marker"] == "_"
+    assert info["fixed_prf"] is False
+    assert info["look_direction"] == "R"
+    assert info["orbit_direction"] == "A"
+    assert info["beam_code"] == "0106"
+    assert info["beam"] == "06"
 
 
 def test_detect_product_metadata_prefers_hh(tmp_path):
@@ -188,7 +207,12 @@ def test_process_alos4_pair_writes_xml_without_running(tmp_path):
     assert result["reference_processing_dir"] == reference.resolve()
     assert result["secondary_processing_dir"] == secondary.resolve()
     assert result["stage_compat_names"] is False
-    assert result["range_sampling_rates"] == {98: 98_242_186.9}
+    assert result["range_sampling_rates"] == {
+        98: 98_242_186.875,
+        49: 49_121_093.4375,
+        32: 32_747_395.625,
+        16: 16_373_697.8125,
+    }
 
 
 def test_process_alos4_pair_can_stage_compat_names(tmp_path):
@@ -271,5 +295,7 @@ def test_process_alos4_pair_accepts_custom_range_sampling_rate(tmp_path):
 def test_default_range_sampling_rates_accepts_overrides():
     assert default_range_sampling_rates({98: 98_304_000.0, 32: 32_747_395.6}) == {
         98: 98_304_000.0,
+        49: 49_121_093.4375,
         32: 32_747_395.6,
+        16: 16_373_697.8125,
     }

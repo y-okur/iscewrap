@@ -41,7 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         metavar="CODE=HZ",
-        help="Patch an ALOS-4 range sampling code, e.g. 98=98242186.9",
+        help="Patch an ALOS-4 range sampling code, e.g. 98=98242186.875",
     )
     parser.add_argument(
         "--polarization",

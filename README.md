@@ -24,7 +24,7 @@ Lightweight Python wrappers for ISCE/ISCE2 workflows.
 ## Installation
 
 ```bash
-pip install -e .
+pip install .
 ```
 
 ## Example
@@ -145,9 +145,20 @@ result = process_alos4_pair(
 ```
 
 ALOS-4 products may expose range sampling codes that ISCE2's ALOS-2 reader does
-not know. The wrapper currently patches UWD code `98` as `98_242_186.9` Hz at
-runtime without editing your ISCE2 installation. Override it if your product
-format documentation gives a more exact value:
+not know. The wrapper patches the JAXA PALSAR-3 CEOS sampling-frequency codes at
+runtime without editing your ISCE2 installation:
+
+```python
+{
+    98: 98_242_186.875,
+    49: 49_121_093.4375,
+    32: 32_747_395.625,
+    16: 16_373_697.8125,
+}
+```
+
+Override individual values if your product format documentation gives a
+different value:
 
 ```python
 result = process_alos4_pair(
@@ -170,7 +181,7 @@ The same workflow is available from the command line:
 iscewrap-alos4 reference_dir secondary_dir alos4_isce_work \
   --start-step preprocess \
   --end-step geocode \
-  --range-sampling-rate 98=98242186.9
+  --range-sampling-rate 98=98242186.875
 ```
 
 Use `--backend compat --alos2-compat-mode FBD` to force the older symlink
@@ -202,13 +213,26 @@ The same prototype front door is available as:
 alos4app.py reference_dir secondary_dir alos_isce_work --end-step geocode
 ```
 
-## Geocode a raster
+## Native ISCE2 geocode
+
+Geocode one ALOS raster with ISCE2's native `geozero` pipeline.  Looks are
+inferred from names like `*_8rlks_16alks.unw`.
+
+```bash
+iscewrap-geocode filt_250728-250811_8rlks_16alks.unw \
+  --track ../250728.track.xml \
+  --dem /path/to/dem.dem.wgs84 \
+  --grid-reference filt_250728-250811_8rlks_16alks_msk.unw.geo \
+  --output custom_name.unw.geo
+```
+
+## Lat/lon array geocode
 
 Radar-coordinate rasters can be geocoded with matching ISCE latitude and
 longitude rasters:
 
 ```bash
-iscewrap-geocode-raster input.rdr run/reference.lat run/reference.lon output.geo \
+iscewrap-geocode-latlon input.rdr run/reference.lat run/reference.lon output.geo \
   --resolution 0.0002777777777777778 \
   --method nearest
 ```

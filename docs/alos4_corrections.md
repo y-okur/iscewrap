@@ -69,11 +69,42 @@ LED-ALOS21250710-250728-FBD
 This preserves ISCE2's expected frame/date/mode parsing while leaving the input
 product layout unchanged.
 
+### ALOS-4 Scene_ID Fields
+
+The ALOS-4 Scene_ID carries processing-relevant metadata:
+
+```text
+ALOS4 125 0710 250728 UWD P R A 0108
+      path frame date   mode  | | beam code
+                             | orbit direction: A/D
+                             look direction: R/L
+```
+
+The single character after the observation mode is the PRF marker:
+
+```text
+P  fixed PRF observation
+_  nominal observation
+```
+
+`parse_alos4_scene_id()` exposes these fields directly. The IMG filename parser
+uses the same logic and accepts both PRF markers:
+
+```python
+from iscewrap.alos4 import parse_alos4_scene_id
+
+scene = parse_alos4_scene_id("ALOS41250710250728UWDPRA0108")
+print(scene["obs_mode"])              # UWD
+print(scene["fixed_prf"])             # True
+print(scene["look_direction_name"])   # right
+print(scene["orbit_direction_name"])  # ascending
+```
+
 ### Range Sampling Rate
 
 Problem:
 
-The ALOS-4 UWD sample reports a range sampling code of `98`, which is not in
+ALOS-4 products can report PALSAR-3 range sampling codes that are not in
 ISCE2's ALOS-2 `fsampConst` table.
 
 Correction:
@@ -81,13 +112,20 @@ Correction:
 The backend patches the table at runtime:
 
 ```python
-98: 98_242_186.9
+98: 98_242_186.875,
+49: 49_121_093.4375,
+32: 32_747_395.625,
+16: 16_373_697.8125,
 ```
 
-This value came from the first successful ALOS-4 UWD LED/header inspection:
+These values come from the JAXA ALOS-4 PALSAR-3 CEOS format sampling-frequency
+settings:
 
 ```text
-98.2421869 MHz
+98.24218687500000 MHz
+49.12109343750000 MHz
+32.74739562500000 MHz
+16.37369781250000 MHz
 ```
 
 Override path:
@@ -95,14 +133,14 @@ Override path:
 ```python
 process_alos4_pair(
     ...,
-    range_sampling_rates={98: 98_242_186.9},
+    range_sampling_rates={98: 98_242_186.875},
 )
 ```
 
 CLI:
 
 ```bash
-iscewrap-alos4 REF SEC WORK --range-sampling-rate 98=98242186.9
+iscewrap-alos4 REF SEC WORK --range-sampling-rate 98=98242186.875
 ```
 
 ### CEOS Image Layout / VRT Offsets
@@ -210,11 +248,10 @@ This is diagnostic only; it does not change processing results.
 
 ## Known Open Items
 
-- Confirm ALOS-4 FWD sampling defaults.  A known FWD sample produced code `32`
-  and LED-derived sampling near `32.7473956 MHz`, but FWD is not enabled yet.
+- Confirm ALOS-4 FWD processing behavior.  The JAXA CEOS sampling table now
+  includes code `32` as `32.747395625 MHz`, but FWD is not enabled yet.
 - Move from runtime hooks toward a true `alos4App.py` application class once the
   UWD workflow is stable.
 - Test ALOS-2/ALOS-4 mixed pairs only after same-orbit handling is verified.
 - Add ScanSAR-specific logic separately; current stripmap assumptions should not
   be stretched into ScanSAR.
-

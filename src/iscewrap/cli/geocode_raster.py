@@ -50,6 +50,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable progress messages during geocoding.",
     )
+    parser.add_argument(
+        "--no-edge-mask",
+        action="store_true",
+        help=(
+            "Disable source-footprint masking. By default, pixels outside the "
+            "valid geolocation footprint are set to nodata to avoid nearest "
+            "neighbor edge streaks."
+        ),
+    )
     return parser
 
 
@@ -65,6 +74,7 @@ def main(argv: list[str] | None = None) -> None:
         nodata=args.nodata,
         band=args.band,
         verbose=not args.quiet,
+        mask_edges=not args.no_edge_mask,
     )
 
     print(f"output file: {result['output_file']}")
@@ -74,6 +84,7 @@ def main(argv: list[str] | None = None) -> None:
     print(f"data type: {result['data_type']}")
     print(f"number of bands: {result['number_bands']}")
     print(f"extent: {result['extent']}")
+    print(f"edge mask: {result['mask_edges']}")
 
 
 if __name__ == "__main__":

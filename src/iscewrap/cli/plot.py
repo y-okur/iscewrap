@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 
-from iscewrap.plot import plot_raster
+from iscewrap.plot import plot_raster, plot_wbd
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -30,6 +30,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vmin", dest="datamin", type=float, default=None)
     parser.add_argument("--vmax", dest="datamax", type=float, default=None)
     parser.add_argument("--title", default=None)
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="Optional image file to save instead of only showing the plot.",
+    )
+    parser.add_argument(
+        "--wbd",
+        action="store_true",
+        help="Plot input as a categorical water-body mask.",
+    )
     parser.add_argument(
         "--amplitude-scale",
         choices=["auto", "linear", "log", "db"],
@@ -57,6 +67,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
+    if args.wbd:
+        plot_wbd(
+            input_file=args.input,
+            output_file=args.output,
+            title=args.title,
+            show=args.output is None,
+        )
+        return
+
     plot_raster(
         input_file=args.input,
         band=args.band,

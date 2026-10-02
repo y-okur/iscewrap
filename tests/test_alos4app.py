@@ -67,7 +67,12 @@ def test_process_alos_pair_dispatches_alos4_uwd(tmp_path):
     assert result["workflow"] == "ALOS4_UWD_NATIVE"
     assert result["pair_name"] == "20250728_20250811"
     assert result["backend"] == "native"
-    assert result["range_sampling_rates"] == {98: 98_242_186.9}
+    assert result["range_sampling_rates"] == {
+        98: 98_242_186.875,
+        49: 49_121_093.4375,
+        32: 32_747_395.625,
+        16: 16_373_697.8125,
+    }
 
 
 def test_process_alos_pair_dispatches_alos2(tmp_path):
